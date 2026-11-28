@@ -17,6 +17,8 @@ import Combine
 
 @MainActor final class WorkshopComposerInput: ObservableObject {
     @Published private var value = WorkshopComposerText()
+    @Published private(set) var predictionState = WorkshopComposerPrediction()
+    var prediction: WorkshopInputPrediction? { predictionState.suggestion }
     var text: String {
         get { value.text }
         set { updateText(newValue, editorID: editorID) }
@@ -30,7 +32,27 @@ import Combine
         next.update(value, editorID: editorID)
         guard next != self.value else { return }
         self.value = next
+        if !value.isEmpty { dismissPrediction() }
         onChange?()
+    }
+
+    func receivePrediction(_ prediction: WorkshopInputPrediction?, sourceTurnId: String?, ready: Bool) {
+        var next = predictionState
+        next.receive(prediction, sourceTurnId: sourceTurnId, ready: ready)
+        if !text.isEmpty { next.dismiss() }
+        if next != predictionState { predictionState = next }
+    }
+
+    func dismissPrediction() {
+        guard prediction != nil else { return }
+        predictionState.dismiss()
+    }
+
+    @discardableResult func acceptPrediction() -> Bool {
+        guard text.isEmpty, let prediction else { return false }
+        dismissPrediction()
+        text = prediction.text
+        return true
     }
 
     func clearAfterSending() {

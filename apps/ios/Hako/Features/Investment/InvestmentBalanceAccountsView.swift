@@ -233,6 +233,7 @@ struct InvestmentBalanceAccountEditor: View {
     let onSaved: (String) -> Void
     private let initialAmount: String
     private let initialDay: Date
+    private let initialName: String
     @State private var name = ""
     @State private var amount: String
     @State private var recordDay: Date
@@ -246,11 +247,12 @@ struct InvestmentBalanceAccountEditor: View {
         self.hidesAmounts = hidesAmounts
         self.onSaved = onSaved
         editorDraft = editing
-        let initial = ""
+        let initial = editing?.action.text("amount") ?? ""
         initialAmount = initial
         _amount = State(initialValue: editing?.action.text("amount") ?? initial)
-        _name = State(initialValue: editing?.value("name") ?? "")
-        let day = InvestmentBook.day()
+        initialName = editing?.value("name") ?? ""
+        _name = State(initialValue: initialName)
+        let day = editing?.date ?? InvestmentBook.day()
         initialDay = day
         _recordDay = State(initialValue: editing?.date ?? day)
     }
@@ -259,9 +261,9 @@ struct InvestmentBalanceAccountEditor: View {
         let editing = account != nil
         let title = editing ? "更新余额" : "添加账户"
         let hasName = !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        let hasChanges = !name.isEmpty || amount != initialAmount || recordDay != initialDay
+        let hasChanges = name != initialName || amount != initialAmount || recordDay != initialDay
         SettingsSheet(title: title, hasChanges: hasChanges,
-                      isBusy: saving || store.saving, saveEnabled: !amount.isEmpty && (editing || hasName), onSave: { Task { await save() } },
+                      isBusy: saving || store.saving, saveEnabled: (editorDraft == nil || hasChanges) && !amount.isEmpty && (editing || hasName), onSave: { Task { await save() } },
                       saveInProgress: saving,
                       detents: [.medium, .large], saveAccessibilityLabel: editorDraft != nil ? "完成修改并更新预览" : editing ? "保存余额" : "添加账户") {
             Form {
@@ -475,6 +477,7 @@ struct InvestmentBalanceRecordEditor: View {
     let change: InvestmentBalanceChange
     let hidesAmounts: Bool
     private let initialAmount: String
+    private let initialDate: Date
     @State private var date: Date
     @State private var amount: String
     @State private var saving = false
@@ -486,14 +489,15 @@ struct InvestmentBalanceRecordEditor: View {
         self.change = change
         self.hidesAmounts = hidesAmounts
         editorDraft = editing
-        let initial = hidesAmounts ? "" : change.after.formatted(.number.grouping(.never))
+        let initial = editing?.action.text("amount") ?? (hidesAmounts ? "" : change.after.formatted(.number.grouping(.never)))
         initialAmount = initial
         _amount = State(initialValue: editing?.action.text("amount") ?? initial)
-        _date = State(initialValue: editing?.date ?? change.day)
+        initialDate = editing?.date ?? change.day
+        _date = State(initialValue: initialDate)
     }
 
     var body: some View {
-        let hasChanges = date != change.day || amount != initialAmount
+        let hasChanges = date != initialDate || amount != initialAmount
         let hasAmount = !amount.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         SettingsSheet(title: "编辑余额记录", hasChanges: hasChanges, isBusy: saving || store.saving,
                       saveEnabled: hasChanges && (hidesAmounts || hasAmount), onSave: {

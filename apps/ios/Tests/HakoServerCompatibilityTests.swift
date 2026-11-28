@@ -2,6 +2,12 @@ import Foundation
 
 @main struct HakoServerCompatibilityTests {
     static func main() {
+        for version in ["0.9.3", "0.9.5", "0.9.6", "0.9.10", "0.9.110"] {
+            precondition(HakoServerCompatibility.serverWarning(for: version) == nil, "Compatible server rejected: \(version)")
+        }
+        for version in ["0.8.16", "0.9.2", "0.10.0", "1.0.0", "0..9.5", "0.9.5.", "0.9.5-beta", "0.9.2147483648"] {
+            precondition(HakoServerCompatibility.serverWarning(for: version) != nil, "Unsupported or invalid server accepted: \(version)")
+        }
         func warning(server: String, minimumIOS: String, installed: String) -> String? {
             HakoServerCompatibility.evaluate(Data("""
                 {"serverVersion":"\(server)","minimumIosVersion":"\(minimumIOS)","minimumAgentVersion":"1.0.0"}

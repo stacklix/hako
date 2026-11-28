@@ -3,7 +3,6 @@ import SwiftUI
 struct StockTradeView: View {
     @StateObject private var store = StockTradeStore.shared
     @StateObject private var navigation = StockTradeNavigation()
-    @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     @State private var page = StockTradeTab.picks
     @State private var sheet: Sheet?
@@ -20,7 +19,7 @@ struct StockTradeView: View {
     }
     var body: some View {
         Group {
-            if !store.configured {
+            if store.entryState == .connection {
                 ContentUnavailableView {
                     Label("连接 Cerno", systemImage: "chart.xyaxis.line")
                 } description: {
@@ -28,7 +27,8 @@ struct StockTradeView: View {
                 } actions: {
                     Button("配置连接") { sheet = .settings }.buttonStyle(StockTradeAppearance.action).padding(.horizontal, 32)
                 }
-            } else if store.session == nil { loginState }
+            } else if store.preparingInitialContent { preparingState }
+            else if store.entryState == .login { loginState }
             else {
                 ZStack {
                     Group {
@@ -36,38 +36,41 @@ struct StockTradeView: View {
                         case .picks: picks
                         case .watch: StockTradeWatchView(store: store)
                         case .monitor: StockTradeFeedView(store: store, kind: .monitor)
-                        case .work: StockTradeWorkbench(store: store, showResults: showResults, showSettings: { sheet = .settings })
+                        case .work: StockTradeWorkbench(store: store, showResults: showResults)
                         }
                     }
                     .opacity(navigation.routes.isEmpty ? 1 : 0)
                     .allowsHitTesting(navigation.routes.isEmpty)
                     .accessibilityHidden(!navigation.routes.isEmpty)
                     ForEach(navigation.routes) { route in
-                        StockTradeDestination(store: store, route: route, showResults: showResults)
+                        StockTradeDestination(store: store, route: route, showResults: showResults, showMonitor: showMonitor)
                             .opacity(navigation.routes.last?.id == route.id ? 1 : 0)
                             .allowsHitTesting(navigation.routes.last?.id == route.id)
                             .accessibilityHidden(navigation.routes.last?.id != route.id)
                     }
                 }
-                .safeAreaInset(edge: .bottom, spacing: 0) {
-                    StockTradeBottomTabs(selection: Binding(get: { page }, set: { page = $0; navigation.reset() }))
-                }
+            }
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if store.preparingInitialContent || store.session != nil {
+                StockTradeBottomTabs(selection: Binding(get: { page }, set: { page = $0; navigation.reset() }))
+                    .disabled(store.preparingInitialContent)
             }
         }
         .background(StockTradeAppearance.background).tint(StockTradeAppearance.tint)
         .navigationTitle("Cerno").navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(StockTradeAppearance.background, for: .navigationBar)
         .toolbarBackground(.visible, for: .navigationBar)
-        .navigationBarBackButtonHidden(true)
+        .navigationBarBackButtonHidden(!navigation.routes.isEmpty)
         .environmentObject(navigation)
         .onChange(of: page) { _, _ in navigation.reset() }
         .onChange(of: store.scope) { _, _ in navigation.reset(); sheet = nil; showingPoolHelp = false; localError = nil }
         .toolbar {
-            ToolbarItem(placement: .topBarLeading) {
-                Button {
-                    if navigation.routes.isEmpty { dismiss() } else { navigation.pop() }
-                } label: { Image(systemName: "chevron.left") }
-                    .accessibilityLabel(navigation.routes.isEmpty ? "返回 Hako" : "返回上一页")
+            if !navigation.routes.isEmpty {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button { navigation.pop() } label: { Image(systemName: "chevron.left") }
+                        .accessibilityLabel("返回上一页")
+                }
             }
             ToolbarItem(placement: .topBarTrailing) {
                 Button { sheet = .settings } label: { Image(systemName: "slider.horizontal.3") }
@@ -95,9 +98,21 @@ struct StockTradeView: View {
         .onChange(of: scenePhase) { _, phase in if phase == .active { Task { await store.activate() } } }
     }
     private func showResults() { sheet = nil; navigation.reset(); page = .picks }
+    private func showMonitor() { sheet = nil; navigation.reset(); page = .monitor }
     private func startOrShowTask() {
         if let task = store.activeWorkflow { navigation.push(.task(task)) }
         else { navigation.push(.create(.full)) }
+    }
+    private var preparingState: some View {
+        StockTradeScreen {
+            StockTradeHeading(title: "A 股选股", subtitle: "发现机会，也看清入选依据")
+            StockTradeCard {
+                HStack(spacing: 10) {
+                    ProgressView()
+                    Text("正在载入选股结果…").font(.subheadline).foregroundStyle(.secondary)
+                }.frame(maxWidth: .infinity, minHeight: 80)
+            }
+        }
     }
     private var loginState: some View {
         StockTradeScreen {
@@ -161,7 +176,7 @@ struct StockTradeView: View {
                 StockTradeCard {
                     DisclosureGroup("本轮门槛与规则") { StockTradeFields(fields: run.thresholds).padding(.top, 8) }.font(.subheadline)
                 }
-            } else if store.loading { ProgressView("读取快照…").frame(maxWidth: .infinity).padding(.vertical, 32) }
+            } else if store.resultsState == .loading { ProgressView("读取快照…").frame(maxWidth: .infinity).padding(.vertical, 32) }
             else { emptyState }
         }.refreshable { await store.refresh() }
     }
@@ -202,7 +217,7 @@ struct StockTradeView: View {
         return formatter.string(from: date)
     }
     private var emptyState: some View {
-        let unavailable = store.error != nil && !store.missingSnapshot
+        let unavailable = store.resultsState != .missing
         return StockTradeCard {
             VStack(spacing: 16) {
                 Image(systemName: unavailable ? "wifi.exclamationmark" : "list.bullet.rectangle").font(.title).foregroundStyle(StockTradeAppearance.tint)

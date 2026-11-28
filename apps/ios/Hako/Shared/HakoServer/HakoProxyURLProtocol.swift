@@ -49,13 +49,12 @@ final class HakoProxyURLProtocol: URLProtocol, @unchecked Sendable {
         guard authentication.authenticated, !authentication.logoutPending else {
             throw HakoHTTPProxy.failure("HTTP 代理需要先登录 Sora 服务器。")
         }
-        // Require the independent proxy service before sending a mutating request.
+        // Use the same server version policy as sign-in before forwarding any request.
         struct Version: Decodable { let serverVersion: String }
         let version = try JSONDecoder().decode(Version.self, from: await authentication.send(
             "/api/v1/version", method: "GET", body: nil, logSource: .hako)).serverVersion
-        let parts = version.split(separator: ".").compactMap { Int($0) }
-        guard parts.count == 3, parts[0] == 0, parts[1] == 8, parts[2] >= 16 else {
-            throw HakoHTTPProxy.failure("独立 HTTP 代理要求 Sora 0.8.16 或更高的 0.8.x 版本。")
+        if let warning = HakoServerCompatibility.serverWarning(for: version) {
+            throw HakoHTTPProxy.failure(warning)
         }
         try Task.checkCancellation()
         guard context == authentication.requestContext else { throw CancellationError() }

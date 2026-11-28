@@ -17,6 +17,7 @@ private final class ReadCounter: @unchecked Sendable {
         try allocationUsesCurrentValues()
         try dailyAccountGainRanking()
         try accountAnalysisUsesCurrentValuations()
+        try accountTransactionsIncludeAllHistory()
         let today = InvestmentBook.day()
         let yesterday = InvestmentBook.addDays(-1, to: today)
         var book = InvestmentBook()
@@ -114,6 +115,47 @@ private final class ReadCounter: @unchecked Sendable {
                      "The prepared account must reflect the confirmed write before the editor is dismissed")
         print(String(format: "Presentation: 1,206 events, 10 repeated renders %.3fs; one background preparation %.3fs", repeated, preparation))
         print("Presentation/cache/write: valuation parity, holdings order, one cache read, scope isolation, invalidation and prepared save data passed")
+    }
+
+    static func accountTransactionsIncludeAllHistory() throws {
+        let today = InvestmentBook.day()
+        let earlier = InvestmentBook.addDays(-10, to: today)
+        var book = InvestmentBook()
+        let asset = InvestmentAsset(name: "已清仓", code: "600000.SH", market: "XSHG", kind: .stock, currency: .cny)
+        book.assets[asset.id] = asset
+        let opening = InvestmentEvent(day: earlier, kind: .opening, assetID: asset.id, quantity: 10, price: 2)
+        let deposit = InvestmentEvent(day: today, kind: .deposit, amount: 50)
+        let buy = InvestmentEvent(day: today, kind: .buy, assetID: asset.id, quantity: 5, price: 2)
+        let bonus = InvestmentEvent(day: today, kind: .bonusShares, assetID: asset.id, quantity: 1)
+        let sell = InvestmentEvent(day: today, kind: .sell, assetID: asset.id, quantity: 16, price: 3)
+        // A backfilled funding event keeps the same stable order used by the ledger.
+        let owner = InvestmentAccount(name: "当前账户", currency: .cny,
+            events: [opening, buy, bonus, sell, deposit], type: .securities)
+        let other = InvestmentAccount(name: "其他账户", currency: .cny,
+            events: [.init(day: today, kind: .deposit, amount: 999)], type: .securities)
+        let empty = InvestmentAccount(name: "空账户", currency: .cny, type: .securities)
+        book.accounts = [owner, other, empty]
+        let prepared = InvestmentPresentation(book: book, day: today)
+        let account = prepared.accounts[owner.id]!
+        let groups = account.transactions
+        precondition(groups.map(\.day) == [today, earlier])
+        precondition(groups.flatMap(\.records).map(\.id) == [sell.id, bonus.id, buy.id, deposit.id, opening.id],
+                     "The account list must retain the ledger's stable same-day sequence in reverse")
+        precondition(account.ledger?.positions[asset.id]?.quantity == 0,
+                     "The fixture must really be a fully closed holding")
+        precondition(groups.last?.records.first?.event == opening,
+                     "Opening records and closed assets must remain in the account history")
+        precondition(groups[0].records.first?.cashChange == 48)
+        precondition(groups[0].records.first(where: { $0.id == buy.id })?.cashChange == -10)
+        precondition(groups[0].records.first(where: { $0.id == bonus.id })?.event.quantity == 1,
+                     "Non-cash share events must not be dropped by using only cash rows")
+        precondition(prepared.accounts[other.id]?.transactions.flatMap(\.records).map(\.id) == other.events.map(\.id),
+                     "Changing accounts must never show another account's transactions")
+        precondition(prepared.accounts[empty.id]?.transactions.isEmpty == true)
+        var deleted = book
+        deleted.accounts[0].events.removeAll { $0.id == bonus.id }
+        precondition(InvestmentPresentation(book: deleted, day: today).accounts[owner.id]?
+            .transactions.flatMap(\.records).contains(where: { $0.id == bonus.id }) == false)
     }
 
     static func dailyAccountGainRanking() throws {

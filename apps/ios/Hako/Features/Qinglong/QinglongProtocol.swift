@@ -236,6 +236,60 @@ struct QinglongEnvironmentSaveResult: Sendable {
     let stateError: String?
 }
 
+enum QinglongSubscription {
+    static let repository = "public-repo"
+    static let file = "file"
+    static let privateRepository = "private-repo"
+
+    static func title(_ type: String) -> String {
+        switch type {
+        case repository: "仓库"
+        case file: "单文件"
+        case privateRepository: "私有仓库"
+        default: "未知类型"
+        }
+    }
+
+    /// Both manual editing and assistant confirmation use the same wire payload.
+    static func payload(_ fields: [String: String], item: QinglongItem?) throws -> QinglongJSON {
+        var changes = fields
+        let type = fields["type"] ?? item?.raw["type"].text ?? repository
+        guard [repository, file, privateRepository].contains(type),
+              type != privateRepository || item?.raw["type"].text == privateRepository else {
+            throw QinglongFailure(message: "请选择仓库或单文件订阅。私有仓库请在青龙面板创建。")
+        }
+        if item?.raw["type"].text == privateRepository, type != privateRepository {
+            throw QinglongFailure(message: "私有仓库的订阅类型请在青龙面板调整。")
+        }
+        changes["type"] = type
+        if item == nil { changes["schedule_type"] = "crontab" }
+        var values = (item?.editPayload(changes) ?? .fields(changes)).object
+        let url = values["url"]?.text.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !url.isEmpty, values["alias"]?.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false else {
+            throw QinglongFailure(message: "请填写订阅地址和别名。")
+        }
+        if type != privateRepository {
+            let schemes = type == file ? ["https", "http"] : ["https", "http", "ssh"]
+            guard let parts = URLComponents(string: url), let scheme = parts.scheme?.lowercased(),
+                  schemes.contains(scheme), parts.host?.isEmpty == false else {
+                throw QinglongFailure(message: type == file ? "请填写完整的 HTTP 或 HTTPS 文件下载地址。" : "请填写完整的仓库地址。")
+            }
+            let path = parts.path.split(separator: "/")
+            if type == file, ["github.com", "www.github.com"].contains(parts.host?.lowercased() ?? ""),
+               path.count >= 3, ["blob", "tree"].contains(String(path[2])) {
+                throw QinglongFailure(message: "这是 GitHub 文件展示页，请复制 Raw 原始文件的下载地址。")
+            }
+        }
+        values["url"] = .string(url)
+        if type == file {
+            for key in ["branch", "whitelist", "blacklist", "dependences", "extensions", "pull_type", "pull_option"] {
+                values.removeValue(forKey: key)
+            }
+        }
+        return .object(values)
+    }
+}
+
 struct QinglongTaskSaveResult: Sendable {
     let item: QinglongItem?
     let stateError: String?

@@ -10,8 +10,9 @@ struct CryptoSettingsView: View {
     var body: some View {
         Form {
             Section("交易所接口") {
-                CryptoCredentialLink(exchange:"htx",title:"HTX")
-                CryptoCredentialLink(exchange:"binance",title:"Binance")
+                CryptoCredentialStatusRow(exchange:"htx",title:"HTX")
+                CryptoCredentialStatusRow(exchange:"binance",title:"Binance")
+                CryptoCredentialStatusRow(exchange:"twelve-data",title:"Twelve Data")
             }
             Section {
                 let groups = CryptoWalletGroup.groups(from:wallets)
@@ -47,8 +48,12 @@ struct CryptoSettingsView: View {
                 Text("同一个地址可选择多个兼容网络。点击可编辑，左滑可移除该地址下的全部网络。只保存观察地址，不需要钱包私钥。")
             }
             Section("链上浏览器") {
-                CryptoCredentialLink(exchange:"tronscan",title:"TRONSCAN",tokenOnly:true)
-                CryptoCredentialLink(exchange:"moralis",title:"Moralis",tokenOnly:true)
+                CryptoCredentialStatusRow(exchange:"tronscan",title:"TRONSCAN")
+                CryptoCredentialStatusRow(exchange:"moralis",title:"Moralis")
+            }
+            Section {
+                Text("密钥由主应用统一管理，请在主应用设置的“金融 API Token”中配置和验证。")
+                    .font(.footnote).foregroundStyle(.secondary).cryptoSettingsRowSeparators()
             }
             Section("私有仓库归档") {
                 Text("TRX 合约：data/crypto/htx-trx/年份.csv").font(.caption).textSelection(.enabled).cryptoSettingsRowSeparators()
@@ -153,104 +158,13 @@ private struct CryptoDataExplanationView: View {
     }
 }
 
-private struct CryptoCredentialLink: View {
-    let exchange:String
-    let title:String
-    var tokenOnly=false
-    @State private var configured:Bool?
-    @State private var loadFailed=false
-    @State private var showingEditor = false
-
+private struct CryptoCredentialStatusRow: View {
+    let exchange: String
+    let title: String
     var body: some View {
-        Button { showingEditor = true } label: {
-            HStack {
-                Text(title)
-                Spacer()
-                if configured == true {
-                    Label("已配置",systemImage:"checkmark.circle.fill")
-                        .font(.caption).foregroundStyle(.green)
-                } else if loadFailed {
-                    Text("读取失败").font(.caption).foregroundStyle(.secondary)
-                }
-                Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary).accessibilityHidden(true)
-            }
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .cryptoSettingsRowSeparators()
-        .accessibilityValue(loadFailed ? "配置状态读取失败" : configured.map { $0 ? "已配置" : "未配置" } ?? "正在读取配置")
-        .sheet(isPresented: $showingEditor) {
-            CryptoCredentialEditor(exchange: exchange, title: title, tokenOnly: tokenOnly, onSave: loadStatus)
-        }
-        .task { loadStatus() }
-    }
-
-    private func loadStatus() {
-        do {
-            let credential=try CryptoCredential.load(exchange)
-            configured=tokenOnly ? !credential.key.isEmpty : credential.configured
-            loadFailed=false
-        } catch {
-            configured=nil;loadFailed=true
-        }
-    }
-}
-
-private struct CryptoCredentialEditor: View {
-    let exchange:String
-    let title:String
-    var tokenOnly=false
-    var onSave:()->Void = {}
-    @Environment(\.dismiss) private var dismiss
-    @State private var credential=CryptoCredential()
-    @State private var savedCredential: CryptoCredential?
-    @State private var error:String?
-
-    private var hasChanges: Bool {
-        guard let savedCredential else { return false }
-        return credential.key != savedCredential.key || (!tokenOnly && credential.secret != savedCredential.secret)
-    }
-
-    var body: some View {
-        SettingsSheet(title: title, hasChanges: hasChanges, saveEnabled: hasChanges, onSave: save) {
-            Form {
-                Section {
-                    VStack(alignment:.leading,spacing:6) {
-                        Text(tokenOnly ? "API Token" : "API Key").font(.subheadline).foregroundStyle(.secondary)
-                        SecureField(tokenOnly ? "输入 API Token" : "输入 API Key",text:$credential.key)
-                            .accessibilityLabel(tokenOnly ? "API Token" : "API Key")
-                    }
-                    .cryptoSettingsRowSeparators()
-                    if !tokenOnly {
-                        VStack(alignment:.leading,spacing:6) {
-                            Text("Secret Key").font(.subheadline).foregroundStyle(.secondary)
-                            SecureField("输入 Secret Key",text:$credential.secret).accessibilityLabel("Secret Key")
-                        }
-                        .cryptoSettingsRowSeparators()
-                        Text("使用只读权限。").font(.caption)
-                    }
-                }
-                .textInputAutocapitalization(.never).autocorrectionDisabled().disabled(savedCredential == nil)
-                if let error { Text(error).font(.caption).foregroundStyle(.red) }
-                if savedCredential == nil { Button("重试读取", action: load) }
-            }
-        }
-        .task { load() }
-    }
-
-    private func load() {
-        do {
-            credential = try CryptoCredential.load(exchange)
-            savedCredential = credential
-            error = nil
-        } catch { self.error = error.localizedDescription }
-    }
-    private func save() {
-        do {
-            credential.key=credential.key.trimmingCharacters(in:.whitespacesAndNewlines)
-            credential.secret=tokenOnly ? credential.key : credential.secret.trimmingCharacters(in:.whitespacesAndNewlines)
-            try credential.save(exchange);onSave();dismiss()
-        } catch { self.error=error.localizedDescription }
+        LabeledContent(title) { HakoCredentialStatus(key: exchange + ".api-key") }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .cryptoSettingsRowSeparators()
     }
 }
 

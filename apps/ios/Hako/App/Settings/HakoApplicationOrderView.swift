@@ -9,7 +9,7 @@ struct HakoApplicationOrderView: View {
                 Section {
                     let apps = applications(in: category)
                     ForEach(apps) { app in
-                        Label(app.rawValue, systemImage: app.symbol)
+                        Label { Text(app.rawValue) } icon: { HakoApplicationIcon(application: app, size: 22) }
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
                             .alignmentGuide(.listRowSeparatorTrailing) { $0.width }

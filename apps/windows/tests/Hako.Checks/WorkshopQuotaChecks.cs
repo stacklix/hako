@@ -28,6 +28,7 @@ internal static class WorkshopQuotaChecks
             var empty=JsonSerializer.SerializeToElement(new { });
             var result=JsonSerializer.SerializeToElement(await service.QuotaAsync(empty,default),WorkshopProtocol.Json);
             if (result.GetProperty("buckets")[0].GetProperty("primary").GetProperty("usedPercent").GetDouble() != 25.5 ||
+                result.GetProperty("buckets")[0].GetProperty("credits").GetProperty("balance").GetString() != "123.45" ||
                 result.GetProperty("checkedAt").GetInt64() <= 0 || result.GetRawText().Contains("private-account"))
                 throw new Exception("Read-only Codex quota RPC failed or exposed account identity.");
             try { await service.QuotaAsync(JsonSerializer.SerializeToElement(new { unexpected=true }),default); throw new Exception("Unknown quota parameter accepted."); }
@@ -55,6 +56,25 @@ internal static class WorkshopQuotaChecks
             throw new Exception("Optional current API quota fields were not handled.");
         if (CodeWorkshop.QuotaBuckets(Json("{}" )).Length != 0) throw new Exception("Missing quotas became 100% available.");
         if (JsonSerializer.Serialize(buckets, WorkshopProtocol.Json).Contains("private-account")) throw new Exception("Account identity leaked into quota metadata.");
+        var creditOnly = CodeWorkshop.QuotaBuckets(Json("""
+            {"rateLimitsByLimitId":{"codex":{"credits":{"hasCredits":true,"unlimited":false,"balance":"123.45","accountId":"private-account","token":"private-token"}}}}
+            """));
+        if (creditOnly.Length != 1 || creditOnly[0].Primary is not null || creditOnly[0].Credits?.Balance != "123.45")
+            throw new Exception("Credit balance must survive even without rate-limit windows.");
+        var creditJson = JsonSerializer.Serialize(creditOnly, WorkshopProtocol.Json);
+        if (creditJson.Contains("private-account") || creditJson.Contains("private-token")) throw new Exception("Credit normalization leaked private metadata.");
+        foreach (var balance in new[] { "-1", "NaN", "private-token", "1,000", "1e999" })
+        {
+            var invalidCredits = CodeWorkshop.QuotaBuckets(JsonSerializer.SerializeToElement(new { rateLimits = new {
+                limitId = "codex", credits = new { hasCredits = true, unlimited = false, balance }
+            } }));
+            if (invalidCredits[0].Credits?.Balance is not null) throw new Exception("Invalid credit balance was exposed.");
+        }
+        var unknown = CodeWorkshop.QuotaBuckets(Json("""{"rateLimits":{"limitId":"codex","credits":{"hasCredits":false,"unlimited":false,"balance":null}}}"""));
+        if (unknown[0].Credits?.Balance is not null || unknown[0].Credits?.HasCredits != false)
+            throw new Exception("Missing credit balance was fabricated.");
+        var unlimited = CodeWorkshop.QuotaBuckets(Json("""{"rateLimits":{"limitId":"codex","credits":{"hasCredits":true,"unlimited":true,"balance":null}}}"""));
+        if (unlimited[0].Credits?.Unlimited != true) throw new Exception("Unlimited credits were discarded.");
         Console.WriteLine("PASS: account quota buckets, optional windows, invalid values and privacy filtering.");
     }
 }

@@ -3,8 +3,13 @@ import UIKit
 import WebKit
 
 struct AssistantReplyView: View {
+    struct Confirmation {
+        let itemSymbols: [Int: String]
+    }
+
     let html: AssistantHTML
     var onChoice: ((AssistantReplyChoices.Choice) -> Void)? = nil
+    var confirmation: Confirmation? = nil
     @Environment(\.colorScheme) private var colorScheme
     @ScaledMetric(relativeTo: .body) private var fontSize = 14.0
 
@@ -27,10 +32,29 @@ struct AssistantReplyView: View {
             return String(format: "#%02x%02x%02x", Int((red * 255).rounded()), Int((green * 255).rounded()), Int((blue * 255).rounded()))
         }
         let fragment = onChoice == nil ? html.fragment : AssistantReplyChoices(html).fragment
+        // Decorations come from a locally confirmed receipt, never from model HTML or its attributes.
+        func symbol(_ name: String, color: Color) -> String {
+            let configuration = UIImage.SymbolConfiguration(pointSize: 24, weight: .regular)
+            guard let image = UIImage(systemName: name, withConfiguration: configuration)?
+                .withTintColor(UIColor(color).resolvedColor(with: traits), renderingMode: .alwaysOriginal),
+                  let data = image.pngData() else { return "" }
+            return "content: ''; display: inline-block; width: 1em; height: 1em; margin-inline-end: .4em; vertical-align: -.12em; background: url('data:image/png;base64,\(data.base64EncodedString())') center / contain no-repeat;"
+        }
+        var confirmationStyle = ""
+        if let confirmation {
+            confirmationStyle = """
+            main > section > h2:first-child { color: \(css(.green)); }
+            main > section > h2:first-child::before { \(symbol("checkmark.circle", color: .green)) }
+            main > section > p:nth-child(3) > small::before { \(symbol("clock", color: HakoStyle.muted)) }
+            """
+            for (index, name) in confirmation.itemSymbols.sorted(by: { $0.key < $1.key }) where index >= 0 {
+                confirmationStyle += "main > section > h3:nth-of-type(\(index + 1))::before { \(symbol(name, color: .green)) }\n"
+            }
+        }
         return """
         <!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1">
-        <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+        <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
         <style>
         :root {
             color-scheme: \(dark ? "dark" : "light"); font-size: \(fontSize)px; -webkit-text-size-adjust: 100%;
@@ -73,6 +97,7 @@ struct AssistantReplyView: View {
         a[href^="hako-choice:"] { display: block; padding: .65rem .7rem; margin: .2rem 0; border: 1px solid var(--line); border-radius: .65rem; color: inherit; text-decoration: none; background: var(--code-background); }
         a[href^="hako-choice:"]:active { opacity: .6; }
         \(AssistantTableLayout.style)
+        \(confirmationStyle)
         </style></head><body><main>\(fragment)</main></body></html>
         """
     }

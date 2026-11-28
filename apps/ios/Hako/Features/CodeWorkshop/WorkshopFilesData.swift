@@ -6,6 +6,7 @@ import CryptoKit
     let store: WorkshopStore
     let agent: WorkshopAgent
     let application: WorkshopApplication
+    let threadId: String?
     @Published private(set) var directories: [String: [WorkshopProjectFile]] = [:]
     @Published private(set) var modified: [WorkshopProjectFile] = []
     @Published private(set) var searchResults: [WorkshopProjectFile] = []
@@ -16,8 +17,8 @@ import CryptoKit
     @Published var error: String?
     private var searchID = UUID()
 
-    init(store: WorkshopStore, agent: WorkshopAgent, application: WorkshopApplication) {
-        self.store = store; self.agent = agent; self.application = application
+    init(store: WorkshopStore, agent: WorkshopAgent, application: WorkshopApplication, threadId: String? = nil) {
+        self.store = store; self.agent = agent; self.application = application; self.threadId = threadId
     }
     func request<T: Decodable>(_ method: String, _ params: [String: Any] = [:]) async throws -> T {
         var params = params; params["applicationId"] = application.id

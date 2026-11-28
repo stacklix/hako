@@ -1,6 +1,34 @@
 import Foundation
 
 @main struct CryptoModelsTests {
+    static func chainTrend() {
+        let calendar=CryptoDay.calendar, now=calendar.date(from:DateComponents(year:2026,month:11,day:26,hour:16))!
+        func day(_ offset: Int) -> Date { calendar.date(byAdding:.day,value:offset,to:now)! }
+        func row(_ offset: Int,_ value: Double) -> CryptoRecord {
+            CryptoRecord(kind:"portfolio",day:CryptoDay.key(day(offset)),sampledAt:0,scope:"",values:["chain":value,"total":value+100])
+        }
+        let history=[row(-5,10),row(-2,20),row(-1,.nan),row(1,999)]
+        let asset=CryptoWalletAsset(id:"trx",symbol:"TRX",name:"TRON",quantity:3,value:30)
+        let first=CryptoWalletSnapshot(total:30,assets:[asset],sampledAt:now)
+        let second=CryptoWalletSnapshot(total:0,assets:[],sampledAt:now)
+        func samples(_ snapshots:[CryptoWalletSnapshot?], errors:Bool=false, start:Date?=nil) -> [CryptoRecord] {
+            CryptoChainHistory.records(history,snapshots:snapshots,hasErrors:errors,
+                from:start ?? day(-3),through:now,now:now)
+        }
+        let complete=samples([first,second])
+        precondition(complete.map(\.day) == [CryptoDay.key(day(-2)),CryptoDay.key(now)])
+        precondition(complete.map { $0.values["chain"]! } == [20,30],"sum only chain USDT, never portfolio totals or invented missing days")
+        precondition(samples([first,nil]).count == 1 && samples([first],errors:true).count == 1,"missing or failed wallets cannot create a complete current observation")
+        var stale=first;stale.sampledAt=day(-1)
+        precondition(samples([first,stale]).count == 1,"mixed-day wallet data cannot be relabeled as today's aggregate")
+        var unpriced=first;unpriced.assets[0].value=nil
+        precondition(samples([unpriced]).count == 1,"missing prices are not a zero-valued current estimate")
+        precondition(samples([second]).last?.values["chain"] == 0,"a fully observed zero balance is valid")
+        precondition(samples([],start:day(-6)).count == 2,"history survives missing current snapshots; invalid and future observations are excluded")
+        precondition(CryptoChainHistory.records([],snapshots:[],hasErrors:false,from:day(-3),through:now,now:now).isEmpty)
+        precondition(samples([first],start:day(1)).isEmpty,"an inverted/empty range contains no points")
+        precondition(history[0].values["chain"] == 10 && history.count == 4,"chart preparation never mutates stored history")
+    }
     static func binanceAnalytics() {
         func asset(_ symbol: String,_ quantity: Double,_ price: Double? = nil) -> CryptoBinanceAsset {
             CryptoBinanceAsset(symbol:symbol,name:symbol,free:quantity,locked:0,frozen:0,withdrawing:0,
@@ -53,6 +81,7 @@ import Foundation
     }
     static func main() throws {
         chartDatesStaySeparated()
+        chainTrend()
         binanceAnalytics()
         func check(_ condition: Bool, _ message: String) { precondition(condition,message) }
         let dust=CryptoBinanceAsset(symbol:"BTC",name:"Bitcoin",free:0.000009,locked:0,frozen:0,withdrawing:0,unitPrice:100000)

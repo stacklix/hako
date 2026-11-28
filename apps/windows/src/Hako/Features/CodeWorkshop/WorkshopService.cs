@@ -15,13 +15,13 @@ internal sealed class WorkshopService : IAsyncDisposable
     private WorkshopLocalServer? local;
     private readonly AgentLanEndpoint? lan;
     internal string? ConfigurationError { get; set; }
-    internal WorkshopService(string dataDirectory, GuardianConnection connection, AgentLanEndpoint? lan = null)
+    internal WorkshopService(string dataDirectory, GuardianConnection connection, AgentLanEndpoint? lan = null, bool prewarmWorkers = false)
     {
         this.lan = lan;
         directory = dataDirectory;
         identityFile = Path.Combine(directory, "workshop-computer-id.txt");
         if (File.Exists(identityFile)) computerId = File.ReadAllText(identityFile).Trim();
-        Dispatcher = new WorkshopDispatcher(directory);
+        Dispatcher = new WorkshopDispatcher(directory, prewarmWorkers: prewarmWorkers);
         cloud = connection;
     }
     internal object Status => new { connectionState = cloud.WorkshopState, computerId = cloud.ComputerId, direct = DirectStatus, error = ConfigurationError };

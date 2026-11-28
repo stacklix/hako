@@ -10,13 +10,13 @@ enum QinglongAgentTools {
         properties: ["resource": resourceSchema, "id": ["type": "string"],
                      "view": ["type": "string", "enum": ["file", "log", "outcome"]],
                      "offset": ["type": "integer", "minimum": 0]], required: ["resource", "id", "view"])
-    static let propose = LanguageModelTool(name: "propose_change", description: "生成一项待用户点击确认的变更，不执行。create/update 支持任务、环境变量、公开仓库订阅和脚本；配置文件仅 update。run/stop 支持任务和订阅；enable/disable/delete 支持任务、订阅和环境变量。文件更新须先读取原内容。每次只预览一项。",
+    static let propose = LanguageModelTool(name: "propose_change", description: "生成一项待用户点击确认的变更，不执行。create/update 支持任务、环境变量、公开仓库/单文件订阅和脚本；配置文件仅 update。run/stop 支持任务和订阅；enable/disable/delete 支持任务、订阅和环境变量。文件更新须先读取原内容。订阅 fields.type 使用 public-repo（仓库）或 file（单文件）；file 的 url 必须为文件下载直链，GitHub 使用 Raw 地址。每次只预览一项。",
         properties: ["resource": resourceSchema,
                      "operation": ["type": "string", "enum": QinglongAgentAction.Kind.allCases.map(\.rawValue)],
                      "id": ["type": "string", "description": "已有资源必须使用查询返回的完整 ID"],
                      "draft_id": ["type": "string", "description": "仅纠正当前草稿时填写当前 draft_id；系统保留同一目标未修改的草稿字段。新操作省略。"],
                      "fields": ["type": "object", "properties": Dictionary(uniqueKeysWithValues:
-                        ["name", "command", "schedule", "value", "remarks", "url", "alias", "branch", "whitelist", "blacklist", "filename", "directory", "content", "enabled"].map { ($0, ["type": "string", "description": $0 == "enabled" ? "任务自动执行或变量启用状态，仅接受 true / false；不修改时省略" : "字段值"]) }), "additionalProperties": false]],
+                        ["type", "name", "command", "schedule", "value", "remarks", "url", "alias", "branch", "whitelist", "blacklist", "filename", "directory", "content", "enabled"].map { ($0, ["type": "string", "description": $0 == "enabled" ? "任务自动执行或变量启用状态，仅接受 true / false；不修改时省略" : "字段值"]) }), "additionalProperties": false]],
         required: ["resource", "operation"])
     static var all: [LanguageModelTool] { [list, detail, propose] }
     private static var resourceSchema: [String: Any] { ["type": "string", "enum": QinglongResource.allCases.map(\.rawValue)] }
@@ -55,7 +55,7 @@ enum QinglongAgentTools {
         case .envs: row["remarks"] = item.raw["remarks"].text; row["value"] = "[隐藏]"
         case .subscriptions:
             // URLs, hooks and credentials may contain private-repository tokens.
-            for key in ["alias", "branch", "schedule", "schedule_type"] { row[key] = item.raw[key].text }
+            for key in ["type", "alias", "branch", "schedule", "schedule_type"] { row[key] = item.raw[key].text }
         case .scripts, .configs, .logs: row["path"] = item.filePath; row["directory"] = item.isDirectory
         case .dependencies: row["type"] = item.subtitle; row["state"] = item.dependencyStatus?.title ?? "未知状态"
         }
@@ -99,7 +99,7 @@ struct QinglongAgentAction: Codable {
             switch resource {
             case .tasks: allowed = ["name", "command", "schedule", "enabled"]
             case .envs: allowed = ["name", "value", "remarks", "enabled"]
-            case .subscriptions: allowed = ["name", "url", "alias", "branch", "schedule", "whitelist", "blacklist"]
+            case .subscriptions: allowed = ["type", "name", "url", "alias", "branch", "schedule", "whitelist", "blacklist"]
             case .scripts: allowed = kind == .create ? ["filename", "directory", "content"] : ["content"]
             case .configs: guard kind == .update else { throw QinglongAgentTools.invalid() }; allowed = ["content"]
             default: throw QinglongAgentTools.invalid()
@@ -144,10 +144,7 @@ struct QinglongAgentAction: Codable {
                     throw QinglongFailure(message: "请使用五段或六段 Cron 表达式；间隔订阅请在面板编辑。")
                 }
             }
-            if let url = fields["url"] {
-                guard let parts = URLComponents(string: url), ["http", "https", "ssh"].contains(parts.scheme?.lowercased() ?? ""),
-                      parts.host?.isEmpty == false else { throw QinglongFailure(message: "请提供完整的仓库 URL。") }
-            }
+            if resource == .subscriptions { _ = try QinglongSubscription.payload(fields, item: item) }
             if resource == .scripts, kind == .create {
                 guard let name = fields["filename"], fields["content"] != nil else { throw QinglongAgentTools.invalid() }
                 try QinglongParsing.file(name, directory: fields["directory"] ?? "")
@@ -184,7 +181,7 @@ struct QinglongAgentAction: Codable {
     }
     static func fieldTitle(_ key: String) -> String {
         ["name": "名称", "command": "执行命令", "schedule": "Cron 表达式", "value": "变量值", "remarks": "备注",
-         "url": "仓库地址", "alias": "别名", "branch": "分支", "whitelist": "包含关键词", "blacklist": "排除关键词",
+         "type": "订阅类型", "url": "订阅地址", "alias": "别名", "branch": "分支", "whitelist": "包含关键词", "blacklist": "排除关键词",
          "filename": "文件名", "directory": "目录", "content": "文件内容", "enabled": "启用状态"][key] ?? key
     }
 }
@@ -207,12 +204,16 @@ struct QinglongAgentProposal: Identifiable, Codable {
         switch action.resource {
         case .tasks: keys = ["name", "command", "schedule"]
         case .envs: keys = ["name", "value", "remarks"]
-        case .subscriptions: keys = ["name", "url", "alias", "branch", "schedule", "whitelist", "blacklist"]
+        case .subscriptions:
+            let type = action.fields["type"] ?? item?.raw["type"].text ?? QinglongSubscription.repository
+            keys = ["type", "name", "url", "alias", "schedule"] + (type == QinglongSubscription.file ? [] : ["branch", "whitelist", "blacklist"])
         case .scripts: keys = action.kind == .create ? ["filename", "directory", "content"] : ["content"]
         case .configs: keys = ["content"]
         default: keys = []
         }
-        return Dictionary(uniqueKeysWithValues: keys.map { ($0, action.fields[$0] ?? item?.raw[$0].text ?? "") })
+        var values = Dictionary(uniqueKeysWithValues: keys.map { ($0, action.fields[$0] ?? item?.raw[$0].text ?? "") })
+        if action.resource == .subscriptions { values["type"] = action.fields["type"] ?? item?.raw["type"].text ?? QinglongSubscription.repository }
+        return values
     }
     var editingEnabled: Bool { action.enabled ?? !(item?.disabled ?? false) }
     func revising(fields: [String: String], enabled: Bool) throws -> Self {

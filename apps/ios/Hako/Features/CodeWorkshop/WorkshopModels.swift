@@ -1,5 +1,27 @@
 import Foundation
 
+struct WorkshopInputPrediction: Codable, Equatable, Sendable {
+    let sourceTurnId: String
+    let text: String
+}
+
+struct WorkshopComposerPrediction: Equatable {
+    private(set) var suggestion: WorkshopInputPrediction?
+    private var dismissed: Set<String> = []
+
+    mutating func receive(_ prediction: WorkshopInputPrediction?, sourceTurnId: String?, ready: Bool) {
+        guard ready, let prediction, prediction.sourceTurnId == sourceTurnId,
+              !dismissed.contains(prediction.sourceTurnId), !prediction.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              prediction.text.count <= 200 else { suggestion = nil; return }
+        suggestion = prediction
+    }
+
+    mutating func dismiss() {
+        if let suggestion { dismissed.insert(suggestion.sourceTurnId) }
+        suggestion = nil
+    }
+}
+
 struct WorkshopConversationVisibility {
     private var owners: [UUID: UUID] = [:]
     private var previews: Set<UUID> = []
@@ -18,7 +40,8 @@ enum WorkshopConnectionState: Equatable {
     case disconnected, connecting, reconnecting, connected
 
     var beginningRequest: Self { self == .connected ? .connected : (self == .reconnecting ? .reconnecting : .connecting) }
-    func forConversation(verified: Bool, needsRecovery: Bool) -> Self {
+    func forConversation(verified: Bool, needsRecovery: Bool, checking: Bool = false) -> Self {
+        if checking, !needsRecovery, self == .reconnecting || self == .disconnected { return .connecting }
         guard self == .connected else { return self }
         if needsRecovery { return .reconnecting }
         return verified ? .connected : .connecting
@@ -64,11 +87,18 @@ enum WorkshopConnectionState: Equatable {
 }
 
 enum WorkshopReadIssue {
+    static func isCancellation(_ error: Error) -> Bool {
+        if error is CancellationError { return true }
+        let underlying = error as NSError
+        return underlying.domain == NSURLErrorDomain && underlying.code == NSURLErrorCancelled
+    }
+
     static func suppressesErrorCard(for error: Error) -> Bool {
         (error as? WorkshopFailure)?.code == "codex_operation_missing"
     }
 
     static func message(for error: Error) -> String? {
+        guard !isCancellation(error) else { return nil }
         if let failure = error as? WorkshopFailure {
             switch failure.code {
             case "query_timeout":
@@ -385,6 +415,125 @@ struct WorkshopTurn: Codable, Equatable, Sendable {
     }
 }
 
+struct WorkshopPlanStep: Codable, Equatable, Sendable {
+    let step: String
+    let status: String
+}
+
+struct WorkshopAgentActivity: Codable, Equatable, Sendable {
+    let agentId: String
+    var name: String
+    let action: String
+    var task: String
+    var state: String
+    var summary: String
+    var turn: WorkshopTurn? = nil
+
+    func enriched(name: String, state: String, summary: String, turn candidate: WorkshopTurn?,
+                  dispatchedAtMs: Int64?, parentTurn: WorkshopTurn?, allowsActiveBinding: Bool) -> Self {
+        var result = self
+        if !name.isEmpty { result.name = name }
+        guard let candidate, !candidate.id.isEmpty else { return result }
+        if ["completed", "interrupted", "failed", "closed"].contains(self.state), candidate.state == "inProgress" { return result }
+        let sameTurn = turn?.id == candidate.id
+        let withinDispatch: Bool
+        if let dispatchedAtMs, let started = candidate.startedAt {
+            withinDispatch = started >= dispatchedAtMs / 1000 && (parentTurn?.completedAt.map { started <= $0 } ?? true)
+        } else { withinDispatch = allowsActiveBinding && candidate.state == "inProgress" }
+        // A reused child's newer turn must never rewrite an older task card.
+        guard sameTurn || turn == nil && withinDispatch else { return result }
+        result.turn = candidate
+        result.state = state
+        if !summary.isEmpty { result.summary = summary }
+        return result
+    }
+}
+
+struct WorkshopAgentGroup: Identifiable, Equatable, Sendable {
+    struct Row: Identifiable, Equatable, Sendable {
+        let id: String
+        var activity: WorkshopAgentActivity
+        var sources: [String]
+        var name: String { activity.name.isEmpty ? "子代理" : activity.name }
+        var title: String { activity.task.isEmpty ? "子代理任务" : activity.task }
+        var active: Bool { ["running", "starting", "waiting"].contains(activity.state) }
+        var status: String {
+            switch activity.state {
+            case "running", "starting": "执行中"
+            case "waiting": "等待中"
+            case "completed": "已完成"
+            case "interrupted": "已中断"
+            case "failed": "失败"
+            case "closed": "已关闭"
+            default: "状态待确认"
+            }
+        }
+        func elapsed(at now: Date) -> String? {
+            guard let turn = activity.turn else { return nil }
+            if let elapsed = turn.elapsedText { return elapsed }
+            guard active, turn.state == "inProgress", let start = turn.startedAt, start > 0 else { return nil }
+            let elapsed = now.timeIntervalSince1970 - Double(start)
+            guard elapsed.isFinite, elapsed >= 0, elapsed < Double(Int.max) else { return nil }
+            let seconds = Int(elapsed)
+            if seconds >= 3600 { return "\(seconds / 3600)h \(seconds / 60 % 60)m \(seconds % 60)s" }
+            if seconds >= 60 { return "\(seconds / 60)m \(seconds % 60)s" }
+            return "\(seconds)s"
+        }
+    }
+    let id: String
+    let anchorID: String
+    var rows: [Row]
+    var completedCount: Int { rows.filter { $0.activity.state == "completed" }.count }
+
+    static func groups(in entries: [WorkshopEntry]) -> [Self] {
+        var groups: [Self] = []
+        for entry in entries {
+            guard let turn = entry.turnId, let agents = entry.agents, !agents.isEmpty else { continue }
+            if !groups.contains(where: { $0.id == turn }) { groups.append(Self(id: turn, anchorID: "agents-" + turn, rows: [])) }
+            let groupIndex = groups.firstIndex { $0.id == turn }!
+            for agent in agents {
+                if let index = groups[groupIndex].rows.firstIndex(where: { $0.activity.agentId == agent.agentId }) {
+                    var row = groups[groupIndex].rows[index]
+                    var merged = agent
+                    if merged.name.isEmpty { merged.name = row.activity.name }
+                    if merged.state.isEmpty { merged.state = row.activity.state }
+                    if merged.summary.isEmpty { merged.summary = row.activity.summary }
+                    let newDispatch = ["spawnAgent", "followupTask"].contains(agent.action) && !row.sources.contains(entry.id)
+                    if merged.turn == nil && !newDispatch { merged.turn = row.activity.turn }
+                    if merged.task.isEmpty {
+                        merged = WorkshopAgentActivity(agentId: merged.agentId, name: merged.name, action: merged.action,
+                            task: row.activity.task, state: merged.state, summary: merged.summary, turn: merged.turn)
+                    }
+                    row.activity = merged
+                    if !row.sources.contains(entry.id) { row.sources.append(entry.id) }
+                    groups[groupIndex].rows[index] = row
+                } else {
+                    groups[groupIndex].rows.append(Row(id: turn + ":" + agent.agentId, activity: agent, sources: [entry.id]))
+                }
+            }
+        }
+        return groups
+    }
+}
+
+struct WorkshopExecutionPlan: Identifiable, Equatable, Sendable {
+    let entry: WorkshopEntry
+    var id: String { entry.id }
+    var steps: [WorkshopPlanStep] { entry.plan ?? [] }
+    var completedCount: Int { steps.filter { $0.status == "completed" }.count }
+    var summary: String {
+        steps.first { $0.status == "inProgress" }?.step ?? steps.first { $0.status == "pending" }?.step ?? "全部步骤已完成"
+    }
+
+    static func active(in entries: [WorkshopEntry], operation: WorkshopOperation?) -> Self? {
+        guard operation?.active == true, let turn = operation?.turnId,
+              !entries.contains(where: { $0.turn?.id == turn && ["completed", "failed", "interrupted"].contains($0.turn?.state ?? "") }),
+              let entry = entries.last(where: { $0.kind == "plan" && $0.turnId == turn && $0.plan != nil }),
+              entry.plan?.isEmpty == false else { return nil }
+        return Self(entry: entry)
+    }
+}
+
 struct WorkshopEntry: Codable, Identifiable, Equatable, Sendable {
     let kind: String
     let id: String
@@ -399,6 +548,8 @@ struct WorkshopEntry: Codable, Identifiable, Equatable, Sendable {
     var startedAtMs: Int64? = nil
     var completedAtMs: Int64? = nil
     var turn: WorkshopTurn? = nil
+    var plan: [WorkshopPlanStep]? = nil
+    var agents: [WorkshopAgentActivity]? = nil
 
     var messageDate: Date? {
         guard let value = startedAtMs ?? completedAtMs, (1...253_402_300_799_999).contains(value) else { return nil }
@@ -432,6 +583,22 @@ struct WorkshopEntry: Codable, Identifiable, Equatable, Sendable {
         result.startedAtMs = startedAtMs ?? previous.startedAtMs
         result.completedAtMs = completedAtMs ?? previous.completedAtMs
         result.turn = previous.turn?.state == "completed" && turn?.state != "completed" ? previous.turn : (turn ?? previous.turn)
+        if let agents, let old = previous.agents {
+            result.agents = agents.map { agent in
+                guard let previous = old.first(where: { $0.agentId == agent.agentId }) else { return agent }
+                var result = agent
+                result.turn = agent.turn ?? previous.turn
+                if result.name.isEmpty { result.name = previous.name }
+                if result.task.isEmpty { result.task = previous.task }
+                if result.state.isEmpty { result.state = previous.state }
+                if result.summary.isEmpty { result.summary = previous.summary }
+                if let turn = previous.turn, ["completed", "interrupted", "failed"].contains(turn.state) {
+                    result.state = previous.state
+                    result.summary = previous.summary
+                }
+                return result
+            }
+        }
         return result
     }
 
@@ -603,6 +770,9 @@ struct WorkshopOperation: Codable, Equatable, Sendable {
     let threadId: String?
     let turnId: String?
     let state: String
+    var prediction: WorkshopInputPrediction? = nil
+    var predictionPending: Bool? = nil
+    var waitingForPrediction: Bool { state == "completed" && predictionPending == true }
     let message: String?
     let startedAt: Int64
     var finishedAt: Int64? = nil
@@ -638,7 +808,7 @@ struct WorkshopOperation: Codable, Equatable, Sendable {
 
     var statusLabel: String {
         switch state {
-        case "starting": "正在连接 Codex…"
+        case "starting": "正在准备会话…"
         case "running": "任务在电脑上执行中"
         case "waiting": "等待你确认"
         case "stopping": "正在停止任务"
@@ -815,7 +985,8 @@ enum WorkshopDeliveryState: Equatable, Sendable {
     case waiting, uploading(Double), sending, failed(String), unconfirmed(String)
 
     var awaitingRetry: Bool {
-        switch self { case .failed, .unconfirmed: true; default: false }
+        // A lost acknowledgement or restored receipt is not proof of failure.
+        switch self { case .failed: true; default: false }
     }
     var holdsOperation: Bool {
         switch self { case .waiting, .uploading, .failed: true; default: false }

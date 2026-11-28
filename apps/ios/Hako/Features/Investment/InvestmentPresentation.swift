@@ -45,6 +45,18 @@ struct InvestmentPresentation {
         var dailyGain: Decimal?
         var holdings: [InvestmentAsset] = []
         var allocation: [InvestmentAllocationItem] = []
+        var transactions: [TransactionDay] = []
+    }
+    struct Transaction: Identifiable {
+        var id: UUID { event.id }
+        let event: InvestmentEvent
+        let title: String
+        let cashChange: Decimal?
+    }
+    struct TransactionDay: Identifiable {
+        var id: Date { day }
+        let day: Date
+        var records: [Transaction]
     }
     let day: Date
     var accounts: [UUID: Account] = [:]
@@ -65,7 +77,7 @@ struct InvestmentPresentation {
         var dailyValues: [UUID: InvestmentValuation] = [:]
         for account in book.accounts {
             do {
-                let ledger = try book.ledger(account, through: day)
+                let ledger = try book.ledger(account, through: day, includeRows: true)
                 let previous = book.value(account, on: InvestmentBook.addDays(-1, to: day), requiresDailyPrices: true)
                 let daily = book.value(ledger, on: day, requiresDailyPrices: true)
                 dailyValues[account.id] = daily
@@ -76,9 +88,11 @@ struct InvestmentPresentation {
                 } + [InvestmentAllocationItem(id: "cash", name: "现金", value: ledger.cash)]
                 accounts[account.id] = Account(ledger: ledger, value: book.value(ledger, on: day, requiresDailyPrices: false),
                     dailyGain: daily.flatMap { now in previous.map { now.gain - $0.gain } },
-                    holdings: holdings, allocation: allocation)
+                    holdings: holdings, allocation: allocation,
+                    transactions: Self.transactionDays(account, book: book, cashRows: ledger.cashRows))
             } catch {
-                accounts[account.id] = Account(error: error.localizedDescription)
+                accounts[account.id] = Account(error: error.localizedDescription,
+                    transactions: Self.transactionDays(account, book: book, cashRows: []))
             }
         }
         dailyAccountGains = book.accounts.enumerated().map { index, account in
@@ -140,6 +154,24 @@ struct InvestmentPresentation {
                 gainUsingInsurancePremiums = gain + adjustment * rate
             }
         }
+    }
+
+    private static func transactionDays(_ account: InvestmentAccount, book: InvestmentBook,
+                                        cashRows: [InvestmentCashRow]) -> [TransactionDay] {
+        let cash = Dictionary(cashRows.map { ($0.id, $0.change) }, uniquingKeysWith: { _, latest in latest })
+        var groups: [TransactionDay] = []
+        // Use the ledger's stable sequence in reverse, without limiting the list
+        // to current holdings, chart dates or events that move cash.
+        for event in book.orderedEvents(account, through: .distantFuture).reversed() {
+            let record = Transaction(event: event, title: book.eventTitle(event, accountID: account.id),
+                                     cashChange: cash[event.id])
+            if groups.last?.day == event.day {
+                groups[groups.count - 1].records.append(record)
+            } else {
+                groups.append(TransactionDay(day: event.day, records: [record]))
+            }
+        }
+        return groups
     }
 }
 

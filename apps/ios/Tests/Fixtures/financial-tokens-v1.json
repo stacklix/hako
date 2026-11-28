@@ -1,0 +1,140 @@
+[
+  {
+    "version": 1,
+    "id": "twelve-data.api-key",
+    "title": "Twelve Data",
+    "applications": [
+      "加密资产",
+      "投资记账"
+    ],
+    "applicationIDs": [
+      "crypto",
+      "investment"
+    ],
+    "fields": [
+      {
+        "key": "twelve-data.api-key",
+        "title": "API Key"
+      }
+    ],
+    "values": {
+      "twelve-data.api-key": "fixture-twelve-data.api-key"
+    },
+    "migrated": true
+  },
+  {
+    "version": 1,
+    "id": "htx.api-key|htx.secret-key",
+    "title": "HTX",
+    "applications": [
+      "加密资产"
+    ],
+    "applicationIDs": [
+      "crypto"
+    ],
+    "fields": [
+      {
+        "key": "htx.api-key",
+        "title": "API Key"
+      },
+      {
+        "key": "htx.secret-key",
+        "title": "Secret Key"
+      }
+    ],
+    "values": {
+      "htx.api-key": "fixture-htx.api-key",
+      "htx.secret-key": "fixture-htx.secret-key"
+    },
+    "migrated": true
+  },
+  {
+    "version": 1,
+    "id": "binance.api-key|binance.secret-key",
+    "title": "Binance",
+    "applications": [
+      "加密资产"
+    ],
+    "applicationIDs": [
+      "crypto"
+    ],
+    "fields": [
+      {
+        "key": "binance.api-key",
+        "title": "API Key"
+      },
+      {
+        "key": "binance.secret-key",
+        "title": "Secret Key"
+      }
+    ],
+    "values": {
+      "binance.api-key": "fixture-binance.api-key",
+      "binance.secret-key": "fixture-binance.secret-key"
+    },
+    "migrated": true
+  },
+  {
+    "version": 1,
+    "id": "tronscan.api-key",
+    "title": "TRONSCAN",
+    "applications": [
+      "加密资产"
+    ],
+    "applicationIDs": [
+      "crypto"
+    ],
+    "fields": [
+      {
+        "key": "tronscan.api-key",
+        "title": "API Token"
+      }
+    ],
+    "values": {
+      "tronscan.api-key": "fixture-tronscan.api-key"
+    },
+    "migrated": true
+  },
+  {
+    "version": 1,
+    "id": "moralis.api-key",
+    "title": "Moralis",
+    "applications": [
+      "加密资产"
+    ],
+    "applicationIDs": [
+      "crypto"
+    ],
+    "fields": [
+      {
+        "key": "moralis.api-key",
+        "title": "API Token"
+      }
+    ],
+    "values": {
+      "moralis.api-key": "fixture-moralis.api-key"
+    },
+    "migrated": true
+  },
+  {
+    "version": 1,
+    "id": "tushare.token",
+    "title": "Tushare Pro",
+    "applications": [
+      "投资记账"
+    ],
+    "applicationIDs": [
+      "investment"
+    ],
+    "fields": [
+      {
+        "key": "tushare.token",
+        "title": "API Token"
+      }
+    ],
+    "values": {
+      "tushare.token": "fixture-tushare.token"
+    },
+    "migrated": true
+  }
+]

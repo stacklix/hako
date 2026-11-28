@@ -61,8 +61,9 @@ class SubappBoundariesTests(unittest.TestCase):
     def test_notification_callbacks_are_registered_by_the_child(self):
         catalog = (APP / "App/HakoApplications.swift").read_text(encoding="utf-8")
         contributor = (FEATURES / "CodeWorkshop/WorkshopNotificationContributor.swift").read_text(encoding="utf-8")
-        self.assertIn("application.registerNotifications(in: registry)", catalog)
-        self.assertIn("WorkshopNotificationContributor.registerNotifications(in: registry)", catalog)
+        module = (FEATURES / "CodeWorkshop/CodeWorkshopApplicationModule.swift").read_text(encoding="utf-8")
+        self.assertIn("for contribute in registration.notifications", catalog)
+        self.assertIn("registration.notifications.append(WorkshopNotificationContributor.registerNotifications)", module)
         self.assertNotIn("WorkshopRuntime", catalog)
         self.assertNotIn("WorkshopNotificationPreview", catalog)
         self.assertIn("registry.register(for: .codeWorkshop", contributor)
@@ -79,7 +80,9 @@ class SubappBoundariesTests(unittest.TestCase):
         shell = (APP / "App/HakoApp.swift").read_text(encoding="utf-8")
         catalog = (APP / "App/HakoApplications.swift").read_text(encoding="utf-8")
         self.assertIn("HakoApplications.Application", shell)
-        self.assertIn("UsageEntry()", catalog)
+        self.assertIn("UsageApplicationModule.module", catalog)
+        module = (FEATURES / "Usage/UsageApplicationModule.swift").read_text(encoding="utf-8")
+        self.assertIn("UsageEntry()", module)
         for feature in ("DailyUsage", "UsageView", "Database", "FamilyControls", "ManagedSettings", "SwiftData", "modelContainer"):
             self.assertNotIn(feature, shell + catalog)
 
@@ -102,9 +105,10 @@ class SubappBoundariesTests(unittest.TestCase):
         self.assertIn("HakoApplications.registerShortcuts(in: registry)", registry)
         self.assertNotRegex(registry, r"\b(InvestmentStore|CryptoStore|Recorder|InvestmentBackup)\b")
         self.assertNotIn("import ObjectiveC", host)
-        self.assertIn("Category.allCases.flatMap(\\.applications)", catalog)
+        self.assertIn("for module in modules { module.register(registration) }", catalog)
         for folder in ("Usage", "Crypto", "Investment"):
-            self.assertIn(f"{folder}ShortcutContributor.registerShortcuts(in: registry)", catalog)
+            module = (FEATURES / folder / f"{folder}ApplicationModule.swift").read_text(encoding="utf-8")
+            self.assertIn(f"registration.shortcuts.append({folder}ShortcutContributor.registerShortcuts)", module)
             sources = "\n".join(path.read_text(encoding="utf-8") for path in (FEATURES / folder).glob("*.swift"))
             self.assertNotIn("import AppIntents", sources)
             self.assertIn(f"enum {folder}ShortcutContributor", sources)
@@ -152,7 +156,8 @@ class SubappBoundariesTests(unittest.TestCase):
             if line.strip().startswith("swiftc "):
                 for token in shlex.split(line.strip()):
                     if token.endswith(".swift"):
-                        self.assertTrue((APP.parent / token).is_file(), token)
+                        matches = list(APP.parent.glob(token)) if any(char in token for char in "*?[") else [APP.parent / token]
+                        self.assertTrue(matches and all(path.is_file() for path in matches), token)
 
     def test_children_use_server_contract_without_concrete_client_extensions(self):
         for folder in ("DeviceManagement", "CloudServers"):

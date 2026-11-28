@@ -62,6 +62,8 @@ struct QinglongAgentTests {
     static func main() async throws {
         try readsStreamedRequestBodies()
         try rejectsUnsupportedAndIncompleteOperations()
+        try subscriptionPayloadsRespectFileAndRepositoryModes()
+        try await singleFileSubscriptionWritesOnlyAfterConfirmation()
         try metadataHidesSecrets()
         try conversationsAreIsolatedAndRetainCommitMarker()
         try confirmedCardsRetainReplyAndDetails()
@@ -82,7 +84,7 @@ struct QinglongAgentTests {
         try await editedDraftWritesOnlyAfterConfirmation()
         try assertAssistantFileRoundTrip(QinglongAgentConversationFile(url: URL(fileURLWithPath: "Tests/Fixtures/qinglong-assistant.plist")))
         toolFollowUpsRequireTheSameTarget()
-        print("Qinglong assistant tests passed (22 groups)")
+        print("Qinglong assistant tests passed (24 groups)")
     }
 
     static func readsStreamedRequestBodies() throws {
@@ -300,6 +302,73 @@ struct QinglongAgentTests {
         let result = try QinglongAgentTools.redact(QinglongAgentTools.json(["content": "client-abc secret/with\"quote header-secret"]), connection: connection)
         let parsed = try JSONSerialization.jsonObject(with: Data(result.utf8)) as! [String: String]
         precondition(!parsed["content"]!.contains("secret") && !parsed["content"]!.contains("client-abc"))
+    }
+
+    static func subscriptionPayloadsRespectFileAndRepositoryModes() throws {
+        let url = "https://raw.githubusercontent.com/example/tasks/master/scripts/market.py"
+        let fields = ["type": "file", "url": url, "alias": "market", "schedule": "0 2 * * *", "branch": "master", "whitelist": "market", "blacklist": "test"]
+        let payload = try QinglongSubscription.payload(fields, item: nil)
+        precondition(payload["type"].text == "file" && payload["url"].text == url && payload["schedule_type"].text == "crontab")
+        precondition(["branch", "whitelist", "blacklist"].allSatisfy { payload.object[$0] == nil }, "A single file must not inherit repository filters")
+        let repo = try QinglongSubscription.payload(["url": "https://github.com/example/tasks.git", "alias": "tasks", "schedule": "0 2 * * *", "branch": "master", "whitelist": "market"], item: nil)
+        precondition(repo["type"].text == "public-repo" && repo["branch"].text == "master" && repo["whitelist"].text == "market")
+        for bad in ["ssh://github.com/example/a.py", "https://github.com/example/tasks/blob/master/market.py", "https://github.com/example/tasks/tree/master/scripts", "not a URL"] {
+            var invalid = fields; invalid["url"] = bad
+            rejects { _ = try QinglongSubscription.payload(invalid, item: nil) }
+        }
+        var invalidType = fields; invalidType["type"] = "private-repo"
+        rejects { _ = try QinglongSubscription.payload(invalidType, item: nil) }
+        invalidType["type"] = "invalid"
+        rejects { _ = try QinglongSubscription.payload(invalidType, item: nil) }
+        let file = try item(#"{"id":8,"type":"file","name":"行情","url":"https://example.test/market.py","alias":"market","schedule_type":"interval","interval_schedule":{"type":"hours","value":2},"autoAddCron":1,"autoDelCron":0,"sub_before":"keep hook","proxy":"http://proxy.test","status":1}"#, resource: .subscriptions)
+        let edited = try QinglongSubscription.payload(["name": "新名称"], item: file)
+        precondition(edited["id"].int == 8 && edited["type"].text == "file" && edited["schedule_type"].text == "interval")
+        precondition(edited["interval_schedule"]["value"].int == 2 && edited["sub_before"].text == "keep hook" && edited["proxy"].text == "http://proxy.test")
+        precondition(edited["autoAddCron"] == .bool(true) && edited["autoDelCron"] == .bool(false))
+        let draft = proposal(try action("subscriptions", "update", id: file.id, fields: ["name": "新名称"]), item: file)
+        precondition(draft.editingFields["type"] == "file" && draft.editingFields["branch"] == nil && draft.editingFields["whitelist"] == nil)
+        let revised = try draft.revising(fields: draft.editingFields.merging(["url": url], uniquingKeysWith: { _, new in new }), enabled: true)
+        precondition(revised.action.fields["url"] == url && revised.item?.id == file.id && revised.id == draft.id)
+        let privateRepo = try item(#"{"id":9,"type":"private-repo","url":"git@example.test:private/repo.git","alias":"private","pull_type":"ssh-key","pull_option":{"private_key":"test-only-key"},"schedule_type":"crontab","schedule":"0 2 * * *","sub_after":"keep after"}"#, resource: .subscriptions)
+        let privateEdit = try QinglongSubscription.payload(["name": "新名称"], item: privateRepo)
+        precondition(privateEdit["type"].text == "private-repo" && privateEdit["pull_option"]["private_key"].text == "test-only-key" && privateEdit["sub_after"].text == "keep after")
+        rejects { _ = try QinglongSubscription.payload(["type": "file", "url": url], item: privateRepo) }
+        let publicRepo = try item(#"{"id":10,"type":"public-repo","url":"https://example.test/repo.git","alias":"public","branch":"master","whitelist":"all","dependences":"helper","extensions":"py","schedule_type":"crontab","schedule":"0 2 * * *"}"#, resource: .subscriptions)
+        let converted = try QinglongSubscription.payload(["type": "file", "url": url], item: publicRepo)
+        precondition(converted["type"].text == "file" && converted["id"].int == 10 && converted.object["extensions"] == nil && converted.object["dependences"] == nil)
+    }
+
+    @MainActor static func singleFileSubscriptionWritesOnlyAfterConfirmation() async throws {
+        var writes = 0
+        let url = "https://raw.githubusercontent.com/example/tasks/master/market.py"
+        let panel = try client { request in
+            if request.httpMethod == "GET" { return (200, "{\"code\":200,\"data\":[]}") }
+            writes += 1
+            let body = try JSONDecoder().decode(QinglongJSON.self, from: AgentPanelProtocol.body(request))
+            precondition(request.httpMethod == "POST" && request.url?.path == "/open/subscriptions")
+            precondition(body["type"].text == "file" && body["url"].text == url && body["schedule_type"].text == "crontab")
+            precondition(body.object["branch"] == nil && body.object["whitelist"] == nil)
+            return (200, "{\"code\":200,\"data\":{\"id\":8}}")
+        }
+        let create = try action("subscriptions", "create", id: nil, fields: ["type": "file", "url": url, "alias": "market", "schedule": "0 2 * * *"])
+        try create.validate(item: nil)
+        let preview = proposal(create, item: nil)
+        let edited = try preview.revising(fields: preview.editingFields.merging(["name": "行情同步"], uniquingKeysWith: { _, new in new }), enabled: true)
+        precondition(writes == 0 && edited.editingFields["type"] == "file", "Draft edits must not submit a subscription")
+        try await edited.submit(using: panel, ensureSession: {})
+        precondition(writes == 1, "Confirming a file subscription sends only the subscription request")
+
+        let existing = #"{"id":8,"type":"file","url":"https://example.test/old.py","alias":"market","schedule_type":"crontab","schedule":"0 2 * * *","autoAddCron":1,"status":1}"#
+        let subscriptionItem = try item(existing, resource: .subscriptions)
+        let updater = try client { request in
+            if request.httpMethod == "GET" { return (200, "{\"code\":200,\"data\":[" + existing + "]}") }
+            writes += 1
+            let body = try JSONDecoder().decode(QinglongJSON.self, from: AgentPanelProtocol.body(request))
+            precondition(request.httpMethod == "PUT" && body["type"].text == "file" && body["autoAddCron"] == .bool(true))
+            return (200, "{\"code\":200,\"data\":{\"id\":8}}")
+        }
+        try await proposal(try action("subscriptions", "update", id: subscriptionItem.id, fields: ["name": "新名称"]), item: subscriptionItem).submit(using: updater, ensureSession: {})
+        precondition(writes == 2, "Editing an existing single file must retain file mode")
     }
     static func conversationsAreIsolatedAndRetainCommitMarker() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

@@ -247,9 +247,9 @@ import Combine
             }
             if let capabilities = agent.capabilities,
                !capabilities.contains(where: { androidState.contains($0.name) }) {
-                // Windows cards include on-demand providers such as Codex usage.
+                // Fetch only the monitoring pages shown in device management.
                 let initial = Set(["query.system.metrics", DeviceProcessCommand.status,
-                                   "query.network.listeners", "query.codex.usage", KageAndroidCommand.list])
+                                   "query.network.listeners", KageAndroidCommand.list])
                 for capability in capabilities where initial.contains(capability.name) {
                     group.addTask {
                         await self.refreshQuery(agent, capability: capability, context: context, revisions: liveUpdates)

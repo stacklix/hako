@@ -295,6 +295,7 @@ struct CryptoView: View {
                     }
                 } else {
                     amountPanel("链上资产",value:store.chainTotal)
+                    CryptoChainTrendView(store:store)
                     CryptoChainAssetsView(store:store)
                 }
                 if store.portfolio.isEmpty && store.contracts.isEmpty && store.currentContract == nil {
@@ -749,11 +750,14 @@ struct CryptoTrend: View {
     let units: [String]
     var sharedScale = false
     var zeroReferenceKey: String? = nil
+    var rangeSelection: Binding<Int>? = nil
+    var selectsLatest = false
+    var note: String? = nil
     @State private var selectedDay: String?
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     private var independentScales: Bool { keys.count > 1 && !sharedScale }
-    private var selectedRecord: CryptoRecord? { records.first { $0.day == selectedDay } }
+    private var selectedRecord: CryptoRecord? { records.first { $0.day == selectedDay } ?? (selectsLatest ? records.last : nil) }
     private var hasValues: Bool { records.contains { row in keys.contains { row.values[$0] != nil } } }
     private var tickDates: [Date] {
         guard let first = records.first, let last = records.last else { return [] }
@@ -805,8 +809,21 @@ struct CryptoTrend: View {
             HStack(alignment: .firstTextBaseline) {
                 Text(title).font(.system(size: 16, weight: .semibold))
                 Spacer(minLength: 8)
-                Text(independentScales ? "双刻度" : units.joined(separator: " / "))
-                    .font(.system(size: 11)).foregroundStyle(HakoStyle.muted)
+                if let rangeSelection {
+                    Menu {
+                        ForEach([7,30,90,365,0],id:\.self) { days in
+                            Button(Self.rangeTitle(days)) { rangeSelection.wrappedValue=days;selectedDay=nil }
+                        }
+                    } label: {
+                        HStack(spacing:4) {
+                            Text(Self.rangeTitle(rangeSelection.wrappedValue))
+                            Image(systemName:"chevron.down").font(.caption2)
+                        }.font(.caption).frame(minHeight:44)
+                    }.accessibilityLabel("选择资产趋势日期范围")
+                } else {
+                    Text(independentScales ? "双刻度" : units.joined(separator: " / "))
+                        .font(.system(size: 11)).foregroundStyle(HakoStyle.muted)
+                }
             }
             if !hasValues {
                 Text("暂无历史数据").font(.caption).foregroundStyle(HakoStyle.muted)
@@ -824,11 +841,22 @@ struct CryptoTrend: View {
                     selectionDetails(row)
                 }
             }
+            if let note { Text(note).font(.caption2).foregroundStyle(.secondary) }
         }
         .foregroundStyle(HakoStyle.text)
         .frame(maxWidth: .infinity, alignment: .leading).cryptoPanel()
         .onChange(of: records) { _, _ in selectedDay = nil }
         .onChange(of: keys) { _, _ in selectedDay = nil }
+    }
+
+    private static func rangeTitle(_ days: Int) -> String {
+        switch days {
+        case 7: "近一周"
+        case 30: "近一个月"
+        case 90: "近三个月"
+        case 365: "近一年"
+        default: "全部"
+        }
     }
 
     @ChartContentBuilder
@@ -840,6 +868,12 @@ struct CryptoTrend: View {
             .foregroundStyle(by: .value("指标", names[index]))
             .lineStyle(StrokeStyle(lineWidth: 2.2, lineCap: .round, lineJoin: .round))
             .accessibilityLabel(label).accessibilityValue(description)
+        if selectsLatest || records.count == 1 {
+            PointMark(x:.value("日期",record.date),y:.value(names[index],y))
+                .foregroundStyle(by:.value("指标",names[index]))
+                .symbolSize(record.day == selectedRecord?.day || records.count == 1 ? 28 : 6)
+                .accessibilityLabel(label).accessibilityValue(description)
+        }
     }
 
     private var renderedChart: some View {
@@ -925,12 +959,14 @@ struct CryptoTrend: View {
             HStack {
                 Text(row.day).font(.system(size: 13, weight: .semibold))
                 Spacer()
-                Button { selectedDay = nil } label: {
-                    Label("收起", systemImage: "chevron.up")
-                        .font(.system(size: 11)).frame(minWidth: 44, minHeight: 44)
+                if !selectsLatest || selectedDay != nil {
+                    Button { selectedDay = nil } label: {
+                        Label(selectsLatest ? "最新" : "收起", systemImage: "chevron.up")
+                            .font(.system(size: 11)).frame(minWidth: 44, minHeight: 44)
+                    }
+                    .buttonStyle(.plain).foregroundStyle(HakoStyle.muted)
+                    .accessibilityLabel(selectsLatest ? "返回最新记录" : "收起所选日期的数据")
                 }
-                .buttonStyle(.plain).foregroundStyle(HakoStyle.muted)
-                .accessibilityLabel("收起所选日期的数据")
             }
             valueDetails(row)
         }

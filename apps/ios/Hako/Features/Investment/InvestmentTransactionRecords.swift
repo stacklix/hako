@@ -1,5 +1,89 @@
 import SwiftUI
 
+struct InvestmentAccountTransactions: View {
+    @ObservedObject var store: InvestmentStore
+    let account: InvestmentAccount
+    let days: [InvestmentPresentation.TransactionDay]
+    @State private var editing: InvestmentEvent?
+
+    var body: some View {
+        LazyVStack(alignment: .leading, spacing: 14) {
+            if days.isEmpty {
+                InvestmentCard { Text("暂无交易记录").font(.subheadline).foregroundStyle(.secondary) }
+            }
+            ForEach(days) { day in
+                Text(InvestmentText.date(day.day)).font(.caption).foregroundStyle(.secondary)
+                    .padding(.horizontal, 4).accessibilityAddTraits(.isHeader)
+                ForEach(day.records) { record in
+                    InvestmentCard {
+                        Button { editing = record.event } label: { row(record) }
+                            .buttonStyle(.plain)
+                    }
+                }
+            }
+        }
+        .sheet(item: $editing) { event in
+            InvestmentEventEditor(store: store, accountID: account.id, event: event)
+        }
+        .onChange(of: account.id) { editing = nil }
+    }
+
+    private func row(_ record: InvestmentPresentation.Transaction) -> some View {
+        let event = record.event
+        let asset = store.book.asset(event.assetID)
+        let counterpart = event.transferAccountID.flatMap { store.book.account($0)?.name }
+        return HStack(alignment: .top, spacing: 12) {
+            InvestmentTitle(asset?.displayName ?? record.title,
+                subtitle: asset.map { record.title + " · " + $0.displayCode }
+                    ?? counterpart.map { "对方账户 · " + $0 } ?? "账户现金")
+            Spacer(minLength: 4)
+            VStack(alignment: .trailing, spacing: 4) {
+                summary(record, asset: asset)
+            }.font(.subheadline).monospacedDigit().multilineTextAlignment(.trailing)
+            InvestmentChevron()
+        }.frame(maxWidth: .infinity, minHeight: 44).contentShape(Rectangle())
+    }
+
+    @ViewBuilder private func summary(_ record: InvestmentPresentation.Transaction, asset: InvestmentAsset?) -> some View {
+        let event = record.event
+        switch event.kind {
+        case .bonusShares, .stakingReward, .spotAdjustment:
+            Text((event.quantity > 0 ? "+" : "") + InvestmentText.number(event.quantity) + " " + (asset?.historyUnit ?? "份"))
+            secondary("数量变动")
+        case .adjustment where asset?.kind.usesBalance == true:
+            Text(InvestmentText.money(event.settledAmount, account.currency))
+            secondary("调整后余额")
+        case .opening, .buy, .sell:
+            if event.kind == .opening, asset?.isStockConnect == true {
+                Text(InvestmentText.money(event.settledAmount, account.currency))
+                secondary("录入金额")
+            } else if let change = record.cashChange, change != 0 {
+                Text(InvestmentText.money(change, account.currency, signed: true))
+                secondary("现金变动")
+            } else if asset?.kind.usesBalance == true || asset?.kind == .insurance {
+                Text(InvestmentText.money(event.price, account.currency))
+                secondary(event.kind == .sell ? "实际回款" : "录入金额")
+            } else {
+                Text(InvestmentText.number(event.quantity) + " " + (asset?.historyUnit ?? "份"))
+            }
+            if let asset, asset.kind.usesUnitPrice {
+                if record.cashChange != nil {
+                    secondary(InvestmentText.number(event.quantity) + " " + asset.historyUnit)
+                }
+                secondary("成交价 " + InvestmentText.number(event.price) + " " + store.book.quoteUnit(for: asset))
+            }
+        default:
+            let change = record.cashChange ?? event.amount
+            Text(InvestmentText.money(change, account.currency, signed: true))
+                .foregroundStyle(InvestmentText.tint(change))
+        }
+    }
+
+    private func secondary(_ text: String) -> some View {
+        Text(text).font(.caption2).foregroundStyle(.secondary)
+    }
+}
+
 struct InvestmentTransactionRecords: View {
     @ObservedObject var store: InvestmentStore
     let account: InvestmentAccount

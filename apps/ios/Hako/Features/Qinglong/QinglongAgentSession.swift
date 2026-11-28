@@ -11,6 +11,7 @@ final class QinglongAgentSession: ObservableObject {
     typealias Message = QinglongAgentConversation.Message
     @Published private(set) var messages: [Message] = []
     @Published private(set) var proposal: QinglongAgentProposal?
+    @Published private(set) var changingConversation = false
     @Published private(set) var working = false
     @Published private(set) var committing = false
     @Published private(set) var configured = false
@@ -75,7 +76,8 @@ final class QinglongAgentSession: ObservableObject {
             persist()
         } catch { storageIssue = "无法读取本机会话，请新建会话后重试。" }
     }
-    func saveComposerDraft() {
+    func saveComposerDraft(whileSwitching: Bool = false) {
+        guard !changingConversation || whileSwitching else { return }
         guard let file else { return }
         if working, streamContent.hasContent { preserveReply(); persist() }
         do {
@@ -100,7 +102,7 @@ final class QinglongAgentSession: ObservableObject {
     }
     private func start(_ text: String, images: [Data], retry: Bool) -> Bool {
         restoreConversation()
-        guard !working, !committing, !store.busy else { return false }
+        guard !changingConversation, !working, !committing, !store.busy else { return false }
         guard store.connection != nil else { error = "请先配置青龙连接。"; return false }
         guard storageIssue == nil else { return false }
         guard text.count <= Self.maximumMessageCharacters else {
@@ -126,14 +128,89 @@ final class QinglongAgentSession: ObservableObject {
         } catch { self.error = error.localizedDescription; return false }
     }
     func stop() { turn?.cancel() }
-    func startNewConversation() -> Bool {
-        guard !working, !committing else { return false }
+
+    func startNewConversation() async -> Bool {
+        guard !changingConversation, !working, !committing, !loadingPhoto else { return false }
+        restoreConversation()
+        guard let file, let expected = revision else { return false }
+        changingConversation = true
+        defer { changingConversation = false }
         do {
-            let target = try store.connection.map { try QinglongAgentConversationFile(connectionID: $0.id) }
-            try target?.remove()
+            try await archiveCurrent(file)
+            try await AssistantConversationHistory.shared.reset(current: file.url)
+            guard store.revision == expected else { return false }
             clear(); restoreConversation(); return true
-        } catch { storageIssue = "无法清空本机会话，请重试。"; return false }
+        } catch { storageIssue = "无法保留当前会话，尚未新建。" + error.localizedDescription; return false }
     }
+
+    func historyEntries() async throws -> [AssistantConversationHistory.Entry] {
+        guard !changingConversation, !working, !committing, !loadingPhoto else { throw CancellationError() }
+        restoreConversation()
+        guard let file else { throw CocoaError(.fileReadNoSuchFile) }
+        changingConversation = true
+        defer { changingConversation = false }
+        try await archiveCurrent(file)
+        let entries = try await AssistantConversationHistory.shared.list(current: file.url)
+        guard isCurrentHistoryFile(file) else { throw CancellationError() }
+        return entries
+    }
+
+    func historyMessages(_ id: UUID) async throws -> [AssistantHistoryMessage] {
+        guard let file else { throw CocoaError(.fileReadNoSuchFile) }
+        let snapshot = try await AssistantConversationHistory.shared.load(id, current: file.url)
+        guard isCurrentHistoryFile(file) else { throw CancellationError() }
+        let conversation = try PropertyListDecoder().decode(QinglongAgentConversation.self, from: snapshot.conversation)
+        var result = conversation.messages.map { message in
+            AssistantHistoryMessage(id: message.id, text: message.text, isUser: message.isUser, images: message.images,
+                html: message.html, outcome: message.operation.map {
+                    $0.panelName + " · " + $0.proposal.title + " · " + $0.state.title + "\n" + ($0.result ?? "历史预览仅供查看，继续对话后需重新生成并核对。")
+                })
+        }
+        if let bytes = snapshot.draft {
+            let draft = try PropertyListDecoder().decode(AssistantComposerDraft.self, from: bytes)
+            if !draft.isEmpty {
+                result.append(.init(id: snapshot.entry.id, text: "未发送的草稿：\n" + draft.text, isUser: true, images: draft.attachments.map(\.data)))
+            }
+        }
+        return result
+    }
+
+    func openHistory(_ id: UUID) async -> Bool {
+        guard !changingConversation, !working, !committing, !loadingPhoto,
+              let file, let expected = revision else { return false }
+        changingConversation = true
+        defer { changingConversation = false }
+        do {
+            try await archiveCurrent(file)
+            guard isCurrentHistoryFile(file) else { return false }
+            if try await AssistantConversationHistory.shared.isActive(id, current: file.url) { return true }
+            let saved = try await AssistantConversationHistory.shared.load(id, current: file.url)
+            try saved.validate(conversation: QinglongAgentConversation.self, tool: QinglongAgentToolCall.self)
+            guard isCurrentHistoryFile(file) else { return false }
+            try await AssistantConversationHistory.shared.activate(saved, current: file.url)
+            guard store.revision == expected else { return false }
+            clear(); restoreConversation()
+            proposal = nil; canRetry = false
+            for index in messages.indices { messages[index].operation?.restore() }
+            return persist()
+        } catch { storageIssue = "无法打开历史会话。" + error.localizedDescription; return false }
+    }
+
+    private func isCurrentHistoryFile(_ file: QinglongAgentConversationFile) -> Bool {
+        self.file?.url == file.url && revision != nil && revision == store.revision
+    }
+
+    private func archiveCurrent(_ file: QinglongAgentConversationFile) async throws {
+        guard !messages.isEmpty || !composerDraft.isEmpty else { return }
+        guard persist() else { throw CocoaError(.fileWriteUnknown) }
+        saveComposerDraft(whileSwitching: true)
+        guard storageIssue == nil else { throw CocoaError(.fileWriteUnknown) }
+        let first = messages.first(where: \.isUser)?.text.trimmingCharacters(in: .whitespacesAndNewlines) ?? composerDraft.text
+        try await AssistantConversationHistory.shared.save(current: file.url,
+            title: first.isEmpty ? "图片会话" : first,
+            preview: messages.last?.text ?? "未发送的消息")
+    }
+
     private func run(_ text: String, images: [Data], profile: LanguageModelProfile, ticket: UUID, id: UUID, retry: Bool) async {
         defer {
             if turnID == id {
@@ -291,7 +368,7 @@ final class QinglongAgentSession: ObservableObject {
         persist()
     }
     func revise(_ updated: QinglongAgentProposal) throws {
-        guard !working, !committing, let pending = proposal, pending.id == updated.id else { throw QinglongFailure(message: "草稿已变化，请重新打开修改。") }
+        guard !changingConversation, !working, !committing, let pending = proposal, pending.id == updated.id else { throw QinglongFailure(message: "草稿已变化，请重新打开修改。") }
         try ensure(updated.revision)
         guard updated.connectionID == store.connection?.id, let index = messages.firstIndex(where: { $0.operation?.id == pending.id }),
               messages[index].operation?.revise(updated) == true else { throw QinglongAgentTools.invalid() }
@@ -367,13 +444,14 @@ final class QinglongAgentSession: ObservableObject {
     }
 
     func discard() {
-        guard !working, !committing, let proposal,
+        guard !changingConversation, !working, !committing, let proposal,
               let index = messages.firstIndex(where: { $0.operation?.id == proposal.id }) else { return }
         let result = "预览已放弃，未提交任何操作。"
         messages[index].operation?.finish(.discarded, result: result)
         self.proposal = nil; canRetry = false; explanationPending = false; recordOutcome(result); persist()
     }
     func commit(_ id: UUID) async {
+        guard !changingConversation else { return }
         guard let pending = proposal, pending.id == id, !working, !committing, !store.busy else { return }
         do { try ensure(pending.revision) } catch { clear(); return }
         guard let index = messages.firstIndex(where: { $0.operation?.id == id }),

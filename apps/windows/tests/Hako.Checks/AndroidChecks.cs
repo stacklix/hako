@@ -51,6 +51,7 @@ internal static class AndroidChecks
     }
     internal static async Task RunAsync()
     {
+        CheckStatusFormats();
         await AndroidVideoChecks.RunAsync();
         var folder = Path.Combine(Path.GetTempPath(), "hako-android-check-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(folder);
@@ -122,6 +123,47 @@ internal static class AndroidChecks
             Console.WriteLine("PASS: Android endpoint identity, state units, screen unknown, request deduplication, transport pinning, pending limits, unknown results, upload hash/idempotence, private pairing and restart without replay.");
         }
         finally { if (Path.GetFullPath(folder).StartsWith(Path.GetTempPath(), StringComparison.OrdinalIgnoreCase)) Directory.Delete(folder, true); }
+    }
+    private static void CheckStatusFormats()
+    {
+        var properties = "[ro.product.model]: [msm8916_32_512]\n[ro.build.version.release]: [4.4.4]\n";
+        var legacy = "@@memory\nMemTotal: 402576 kB\nMemFree: 36228 kB\n@@memorysummary\n Free RAM: 170248 kB (26476 cached pss + 106284 cached + 37488 free)\n@@disk\nFilesystem               Size     Used     Free   Blksize\n-k: No such file or directory\n/data                    1.7G    82.2M     1.6G   4096\n@@uptime\n64630.13 61745.75\n@@battery\n level: 99\n scale: 100\n status: 3\n@@display\nno display state\n@@power\n mScreenOn=false\n@@package\n@@process\n@@agent\n@@end\n";
+        foreach (var newline in new[] { "\n", "\r\n", "\r\r\n" })
+        {
+            var parsed = AndroidParsing.Properties(properties.Replace("\n", newline));
+            Check(parsed.GetValueOrDefault("ro.product.model") == "msm8916_32_512"
+                && parsed.GetValueOrDefault("ro.build.version.release") == "4.4.4", "ADB properties must survive transported line endings");
+            var detail = AndroidParsing.Detail("id", legacy.Replace("\n", newline));
+            Check(detail.MemoryTotalBytes == 412237824 && detail.MemoryAvailableBytes == 174333952
+                && detail.StorageTotalBytes == 1825361100 && detail.StorageAvailableBytes == 1717986918
+                && detail.Screen == "off" && detail.BatteryPercent == 99 && detail.Charging == false
+                && Math.Abs(detail.UptimeSeconds!.Value - 64630.13) < .01, "Legacy ADB status must preserve device-reported units and fields");
+        }
+        var modern = legacy.Replace("MemFree: 36228 kB", "MemAvailable: 200000 kB")
+            .Replace("no display state", "mScreenState=DOZE");
+        var preferred = AndroidParsing.Detail("id", modern);
+        Check(preferred.MemoryAvailableBytes == 204800000 && preferred.Screen == "doze", "Modern fields must take precedence over legacy summaries");
+        var missing = AndroidParsing.Detail("id", "@@memory\nMemFree: 1000 kB\n@@power\nno state\n@@end\n");
+        Check(missing.MemoryAvailableBytes is null && missing.StorageAvailableBytes is null && missing.Screen == "unknown",
+            "Missing measurements must stay unknown, not become estimated values");
+        var invalid = AndroidParsing.Detail("id", legacy.Replace("1.6G", "999999999999999999999999999999G"));
+        Check(invalid.StorageAvailableBytes is null, "Oversized legacy storage cannot overflow");
+    }
+    internal static async Task ReadStatusLiveAsync(string folder, string serial)
+    {
+        await using var manager = new AndroidManager(folder);
+        var list = await manager.ListAsync(default);
+        var device = list.Devices.Single(d => d.Connections.Any(c => c.Serial == serial && c.State == "device"));
+        var detail = (AndroidDetail)(await manager.QueryAsync("query.android.device", Json(new { deviceId = device.Id, serial }), default))!;
+        Check(!string.IsNullOrEmpty(device.Model) && !string.IsNullOrEmpty(device.AndroidVersion)
+            && detail.MemoryAvailableBytes is >= 0 && detail.MemoryTotalBytes > 0
+            && detail.StorageAvailableBytes is >= 0 && detail.StorageTotalBytes > 0
+            && detail.UptimeSeconds > 0 && detail.BatteryPercent is >= 0,
+            "Real ADB overview is incomplete");
+        Console.WriteLine(JsonSerializer.Serialize(new { device.Id, device.Name, device.Model, device.AndroidVersion,
+            connections = device.Connections.Length, detail.Screen, detail.BatteryPercent, detail.Charging,
+            detail.MemoryAvailableBytes, detail.MemoryTotalBytes, detail.StorageAvailableBytes, detail.StorageTotalBytes,
+            detail.UptimeSeconds, detail.SampledAt }, AgentConnection.Json));
     }
     internal static async Task ReadLiveAsync(string folder, string apk)
     {

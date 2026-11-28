@@ -482,13 +482,15 @@ extension InvestmentMarketDataTests {
             }
             let close = format.date(from: "2026-10-30T\(hour):00:00+08:00")!
             let target = asset(symbol, .etf, currency, market: market)
-            do {
-                _ = try await provider.history(asset: target, start: session, through: session,
-                    cached: nil, keys: [.tushare: "fixture"], now: close.addingTimeInterval(-1))
-                preconditionFailure("Unclosed daily bars must not be requested as history")
-            } catch InvestmentError.noMarketData(_) { }
+            for now in [close.addingTimeInterval(-1), close, day(31).addingTimeInterval(-1)] {
+                do {
+                    _ = try await provider.history(asset: target, start: session, through: session,
+                        cached: nil, keys: [.tushare: "fixture"], now: now)
+                    preconditionFailure("Daily bars must not be requested before the next local day")
+                } catch InvestmentError.noMarketData(_) { }
+            }
             let after = try await provider.history(asset: target, start: session, through: session,
-                cached: nil, keys: [.tushare: "fixture"], now: close)
+                cached: nil, keys: [.tushare: "fixture"], now: day(31))
             precondition(after.last?.isDailyClose == true)
         }
     }
@@ -514,7 +516,10 @@ extension InvestmentMarketDataTests {
         let symbol = asset("VOO", .etf, .usd, market: "ARCX")
         precondition(!symbol.usesEastmoneyMarketData)
         let early = try await provider.history(asset: symbol, start: day(1), through: day(30), cached: nil, keys: keys, now: close.addingTimeInterval(-60))
-        let done = try await provider.history(asset: symbol, start: day(1), through: day(30), cached: nil, keys: keys, now: close)
+        let atClose = try await provider.history(asset: symbol, start: day(1), through: day(30), cached: nil, keys: keys, now: close)
+        precondition(atClose.last?.day == day(29), "US daily bars must wait until the next local day")
+        let midnight = InvestmentTradingCalendar.instant(market: "US", date: "2026-10-31", time: "00:00")!
+        let done = try await provider.history(asset: symbol, start: day(1), through: day(30), cached: nil, keys: keys, now: midnight)
         precondition(early.last?.day == day(29) && early.last?.isDailyClose == true && done.last?.day == day(30) && done.last?.isDailyClose == true)
         precondition(done.last?.source == "Twelve Data" && done.last?.price == Decimal(string: "500.20"))
         let watch = try await provider.watchQuotes(for: symbol, keys: keys, through: day(30))
@@ -617,6 +622,14 @@ extension InvestmentMarketDataTests {
 extension InvestmentMarketDataTests {
     static func sharedTradingCalendarSkipsUnopenedAndHolidayQuotes() async throws {
         var calendars = sampleTradingCalendars()
+        for market in ["CN_A", "HK", "US"] {
+            let midnight = InvestmentTradingCalendar.instant(market: market, date: "2026-10-31", time: "00:00")!
+            let formatter = InvestmentBook.snapshotDateFormatter()
+            precondition(InvestmentTradingCalendar.lastDailyQuoteDay(calendars, market: market, now: midnight.addingTimeInterval(-1)) == formatter.date(from: "2026-10-29"),
+                         "A closed session must wait until the next local date in \(market)")
+            precondition(InvestmentTradingCalendar.lastDailyQuoteDay(calendars, market: market, now: midnight) == formatter.date(from: "2026-10-30"),
+                         "Friday's daily bar becomes eligible on Saturday in \(market)")
+        }
         let index = calendars.firstIndex { $0.market == "US" && $0.year == 2026 }!
         var days = Array(calendars[index].tradingDays)
         var utc = Calendar(identifier: .gregorian)
@@ -625,7 +638,8 @@ extension InvestmentMarketDataTests {
         days[utc.ordinality(of: .day, in: .year, for: holiday)! - 1] = "0"
         calendars[index].tradingDays = String(days)
         calendars[index].sessionOverrides["2026-11-27"] = [.init(open: "09:30", close: "13:00")]
-        for (time, end) in [("2026-11-26T05:00:00Z", "2026-11-25"), ("2026-11-27T14:29:59Z", "2026-11-25"), ("2026-11-27T18:00:00Z", "2026-11-27")] {
+        for (time, end) in [("2026-11-26T05:00:00Z", "2026-11-25"), ("2026-11-27T14:29:59Z", "2026-11-25"), ("2026-11-27T18:00:00Z", "2026-11-25"),
+                            ("2026-11-27T22:53:41Z", "2026-11-25"), ("2026-11-28T04:59:59Z", "2026-11-25"), ("2026-11-28T05:00:00Z", "2026-11-27")] {
             let now = ISO8601DateFormatter().date(from: time)!
             let provider = InvestmentQuoteProvider(calendars: calendars) { request, _ in
                 precondition(request.url?.path == "/time_series", "Closed markets must not poll /quote")
@@ -635,6 +649,16 @@ extension InvestmentMarketDataTests {
             let quote = try await provider.latestQuote(for: asset("SPYM", .etf, .usd, market: "US"), keys: [.twelveData: "fixture"], now: now)
             precondition(InvestmentBook.snapshotDateFormatter().string(from: quote.day) == end && quote.isDailyClose == true)
         }
+        let pending = InvestmentQuoteProvider(calendars: calendars) { _, _ in
+            preconditionFailure("A daily bar before the next US date must not reach the network")
+        }
+        do {
+            let date = InvestmentBook.snapshotDateFormatter().date(from: "2026-11-27")!
+            _ = try await pending.history(asset: asset("SPYM", .etf, .usd, market: "US"), start: date, through: date,
+                                          cached: nil, keys: [.twelveData: "fixture"],
+                                          now: ISO8601DateFormatter().date(from: "2026-11-27T22:53:41Z")!)
+            preconditionFailure("An unpublished daily bar must be deferred")
+        } catch InvestmentError.noMarketData(_) { }
         let unknown = InvestmentQuoteProvider { _, _ in preconditionFailure("Unknown calendars must not be guessed") }
         do {
             _ = try await unknown.latestQuote(for: asset("SPYM", .etf, .usd, market: "US"), keys: [.twelveData: "fixture"])

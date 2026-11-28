@@ -18,6 +18,9 @@ import UIKit
     private var applying = false
     private var observers: [NSObjectProtocol] = []
     private var pending: Task<Void, Never>?
+    private var settingsSyncTask: Task<Void, Never>?
+    private let backupPreparation = HakoBackupPreparation()
+    private var backupRevision = 0
     private var backupScopes = [HakoBackupScope(root: "HakoLogs", requiresHistory: true), HakoBackupScope(root: "ShortcutHistory", requiresHistory: true)]
     @Published private(set) var enabled: Bool
     @Published private(set) var includesHistory: Bool
@@ -73,21 +76,29 @@ import UIKit
 
     func setIncludesHistory(_ value: Bool) {
         includesHistory = value; defaults.set(value, forKey: HakoBackupPolicy.historyKey)
-        prepareBackup(force: true)
+        backupRevision += 1
+        defaults.removeObject(forKey: Self.backupVersionKey)
+        Task { await prepareBackup(force: true) }
     }
 
     func requestSettingsSync() {
-        guard enabled else { return }
-        if cloud.synchronize() {
-            reconcile(publish: true)
-        } else { settingsStatus = "暂时无法请求 iCloud 同步，请检查系统 iCloud 设置。" }
+        guard enabled, settingsSyncTask == nil else { return }
+        settingsSyncTask = Task {
+            defer { settingsSyncTask = nil }
+            let synchronized = await Task.detached(priority: .utility) {
+                NSUbiquitousKeyValueStore.default.synchronize()
+            }.value
+            guard enabled else { return }
+            if synchronized { reconcile(publish: true) }
+            else { settingsStatus = "暂时无法请求 iCloud 同步，请检查系统 iCloud 设置。" }
+        }
     }
 
     func prepareForRecovery(recheckBackup: Bool = false) async {
         guard !preparing else { return }
         preparing = true
         defer { preparing = false }
-        prepareBackup(force: recheckBackup)
+        await prepareBackup(force: recheckBackup)
         let result = await Task.detached(priority: .utility) { SecureStorage.prepareCloudCredentials() }.value
         if result.failures.isEmpty {
             credentialStatus = "本次已为 \(result.prepared) 项原有凭据准备同步。新保存的密钥与连接配置会自动使用 iCloud 钥匙串。"
@@ -97,17 +108,24 @@ import UIKit
         requestSettingsSync()
     }
 
-    private func prepareBackup(force: Bool = false) {
+    private func prepareBackup(force: Bool = false) async {
         guard force || defaults.integer(forKey: Self.backupVersionKey) != 1 else { return }
+        let revision = backupRevision, history = includesHistory, scopes = backupScopes
         defaults.removeObject(forKey: Self.backupVersionKey)
         do {
             guard let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
                 throw CocoaError(.fileNoSuchFile)
             }
-            try HakoBackupPolicy.prepareExistingFiles(at: base, history: includesHistory, scopes: backupScopes)
+            try await backupPreparation.run {
+                try HakoBackupPolicy.prepareExistingFiles(at: base, history: history, scopes: scopes)
+            }
+            guard revision == backupRevision else { return }
             defaults.set(1, forKey: Self.backupVersionKey)
             backupIssue = nil
-        } catch { backupIssue = "部分本地文件的备份标记未能更新，请解锁后重试。" }
+        } catch {
+            guard revision == backupRevision else { return }
+            backupIssue = "部分本地文件的备份标记未能更新，请解锁后重试。"
+        }
     }
 
     private func schedule() {

@@ -2,6 +2,8 @@
 
 Kage 在 Windows 本机执行 ADB 操作，Hako iOS 提供远程入口。服务端继续只做通用命令鉴权与透传，不解释 Android 参数或结果。手机需要允许电脑调试，Android 11 以上可通过无线调试配对；亮屏不会绕过锁屏。
 
+设备状态解析支持 ADB 的 LF、CRLF 和重复回车 CRCRLF 文本输出，二进制截图与视频保持原始字节。旧 Android 没有 `MemAvailable` 时读取系统 `dumpsys meminfo` 报告的 Free RAM，不用 MemFree 猜测可用内存；旧版 toolbox 的 df 容量按其 K/M/G/T 单位读取（该格式本身经过取整），屏幕状态在 display 未提供时读取 power 的明确 `mScreenOn` 值。缺失信息仍显示未知。
+
 ## 界面
 
 - Kage 原生窗口的「Android 管理」提供设备发现、无线配对、连接、状态、屏幕操作及 Nami 维护。未找到 ADB 时可下载 Google 官方平台工具，也可使用 Android SDK 环境变量或 PATH 中的 ADB。

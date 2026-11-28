@@ -1,5 +1,32 @@
 import Foundation
 
+enum StockTradeEntryState: Equatable {
+    case connection, loading, login, content
+
+    static func resolve(configured: Bool, hasSession: Bool, hasSnapshot: Bool,
+                        initialActivationPending: Bool, busy: Bool, hasError: Bool,
+                        explicitlyLoggedOut: Bool) -> Self {
+        guard configured else { return .connection }
+        if !hasSnapshot && !hasError && !explicitlyLoggedOut && (initialActivationPending || busy) {
+            return .loading
+        }
+        return hasSession ? .content : .login
+    }
+}
+
+enum StockTradeResultsState: Equatable {
+    case loaded, loading, missing, unavailable
+
+    static func resolve(hasSnapshot: Bool, busy: Bool, missingSnapshot: Bool, hasError: Bool) -> Self {
+        if hasSnapshot { return .loaded }
+        if busy { return .loading }
+        if missingSnapshot { return .missing }
+        if hasError { return .unavailable }
+        // Not loaded (including an interrupted first read) is not a confirmed empty result.
+        return .loading
+    }
+}
+
 // Original rule payloads are intentionally retained: the Python backend owns
 // scoring, risk gates and their snake_case fields, not the phone.
 enum StockTradeValue: Codable, Equatable, Sendable {
@@ -281,6 +308,9 @@ enum StockTradeFailure: Error, LocalizedError {
             case "workflow_disabled": "Cerno 数据执行端尚未启用手动任务，请检查后台配置。"
             case "workflow_starting": "后台执行服务正在启动，请稍后重试同一请求。"
             case "workflow_active": "已有任务执行中。请查看任务记录；重复请求不会创建新任务。"
+            case "strategy_conflict": "策略配置已被更新，请重新读取后操作。"
+            case "strategy_invalid": "策略参数不正确，请检查数值范围和周期顺序。"
+            case "strategy_unavailable": "后台策略配置暂不可用，请稍后重试。"
             case "task_not_found": "此任务不存在，请刷新任务记录。"
             case "monitor_unavailable": "Cerno 尚未发布规则监控快照，请先在后台发布监控数据，再刷新。"
             case "snapshot_expired": "此快照已不可用，请刷新首屏。"

@@ -48,6 +48,44 @@ private final class FakeKeychain: KeychainOperations {
     }
 }
 
+// Stall a real migration call at the Security boundary without stalling the
+// fake's storage lock. Unrelated services must remain usable during the stall.
+private final class BlockingKeychain: KeychainOperations, @unchecked Sendable {
+    let entered = DispatchSemaphore(value: 0)
+    let release = DispatchSemaphore(value: 0)
+    private let lock = NSLock()
+    private let storage = FakeKeychain()
+    private var shouldBlock = true
+    private let service = "me.stackli.hako.arcane"
+
+    init() {
+        storage.items = [.init(service: service, account: "token", cloud: false,
+                               data: Data("legacy".utf8), protection: kSecAttrAccessibleWhenUnlockedThisDeviceOnly as String)]
+    }
+    func read(_ query: [String: Any]) -> (OSStatus, Any?) {
+        lock.lock()
+        let block = shouldBlock && query[kSecAttrService as String] as? String == service
+            && query[kSecReturnAttributes as String] as? Bool == true
+        if block { shouldBlock = false }
+        lock.unlock()
+        if block {
+            entered.signal()
+            precondition(release.wait(timeout: .now() + 5) == .success)
+        }
+        lock.lock(); defer { lock.unlock() }
+        return storage.read(query)
+    }
+    func add(_ attributes: [String: Any]) -> OSStatus {
+        lock.lock(); defer { lock.unlock() }; return storage.add(attributes)
+    }
+    func update(_ query: [String: Any], attributes: [String: Any]) -> OSStatus {
+        lock.lock(); defer { lock.unlock() }; return storage.update(query, attributes: attributes)
+    }
+    func delete(_ query: [String: Any]) -> OSStatus {
+        lock.lock(); defer { lock.unlock() }; return storage.delete(query)
+    }
+}
+
 @main struct CloudKeychainTests {
     static func main() throws {
         let fake = FakeKeychain(), bytes = Data("original-secret".utf8)
@@ -82,6 +120,40 @@ private final class FakeKeychain: KeychainOperations {
         try storage.delete(account: "token")
         let deleted = try storage.read(account: "token")
         precondition(deleted == nil && fake.items.allSatisfy { $0.service == console }, "Deletion resurrected a legacy value")
+        try stalledMigrationDoesNotBlockConsole()
         print("PASS: cloud keychain policy, safe migration, failure preservation, device identity isolation and synchronized deletion")
+    }
+
+    private static func stalledMigrationDoesNotBlockConsole() throws {
+        let fake = BlockingKeychain()
+        let migrated = DispatchSemaphore(value: 0), consoleRead = DispatchSemaphore(value: 0)
+        let writeAttempted = DispatchSemaphore(value: 0), written = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            let result = SecureStorage.prepareCloudCredentials(operations: fake)
+            precondition(result.prepared == 1 && result.failures.isEmpty)
+            migrated.signal()
+        }
+        precondition(fake.entered.wait(timeout: .now() + 2) == .success)
+        DispatchQueue.global().async {
+            let console = SecureStorage.namespace("me.stackli.hako.console", operations: fake)
+            precondition((try! console.read(account: "identity.device.v1")) == nil)
+            consoleRead.signal()
+        }
+        precondition(consoleRead.wait(timeout: .now() + 1) == .success,
+                     "Slow cloud migration blocked the device identity used at startup")
+        DispatchQueue.global().async {
+            let sameService = SecureStorage.namespace("me.stackli.hako.arcane", operations: fake)
+            writeAttempted.signal()
+            try! sameService.save(Data("new".utf8), account: "token", accessibility: .whenUnlocked)
+            written.signal()
+        }
+        precondition(writeAttempted.wait(timeout: .now() + 1) == .success)
+        precondition(written.wait(timeout: .now() + 0.1) == .timedOut,
+                     "Same-service save raced credential migration")
+        fake.release.signal()
+        precondition(migrated.wait(timeout: .now() + 2) == .success)
+        precondition(written.wait(timeout: .now() + 2) == .success)
+        let value = try SecureStorage.namespace("me.stackli.hako.arcane", operations: fake).read(account: "token")
+        precondition(value == Data("new".utf8), "Migration replaced a concurrent credential update")
     }
 }

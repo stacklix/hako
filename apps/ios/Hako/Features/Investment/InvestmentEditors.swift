@@ -27,18 +27,19 @@ struct InvestmentField: View {
     let help: String?
     let focusesOnRowTap: Bool
     let preservesPrecision: Bool
-    let unitPrice: Bool
+    let precision: InvestmentPrecision.InputRule
 
     init(_ title: String, text: Binding<String>, axis: Axis = .horizontal, keyboard: UIKeyboardType = .default,
-         help: String? = nil, focusesOnRowTap: Bool = false, preservesPrecision: Bool = false, unitPrice: Bool = false) {
+         help: String? = nil, focusesOnRowTap: Bool = false, preservesPrecision: Bool = false,
+         precision: InvestmentPrecision.InputRule = .amount) {
         self.title = title
         _text = text
         self.axis = axis
         self.keyboard = keyboard
         self.help = help
-        self.focusesOnRowTap = focusesOnRowTap
+        self.focusesOnRowTap = focusesOnRowTap || keyboard == .decimalPad
         self.preservesPrecision = preservesPrecision
-        self.unitPrice = unitPrice
+        self.precision = precision
     }
 
     var body: some View {
@@ -67,8 +68,8 @@ struct InvestmentField: View {
                 .focused($focused)
             if keyboard == .decimalPad, !preservesPrecision,
                let value = Decimal(string: text.replacingOccurrences(of: Locale.current.decimalSeparator ?? ".", with: ".")),
-               InvestmentPrecision.rounded(value, unitPrice: unitPrice) != value {
-                Text(unitPrice ? "单价最多保留 4 位小数，请修改输入。" : "通常最多 2 位小数；绝对值小于 0.01 时最多 4 位，请修改输入。")
+               InvestmentPrecision.rounded(value, unitPrice: precision == .unitPrice) != value {
+                Text(InvestmentPrecision.inputMessage(field: precision == .unitPrice ? "单价" : "金额", rule: precision))
                     .font(.caption).foregroundStyle(.red)
             }
         }.investmentListRow()
@@ -138,18 +139,29 @@ private struct InvestmentEditor<Content: View>: View {
     @Environment(\.dismiss) private var dismiss
     @State private var error: String?
     @State private var saving = false
+    @State private var initialDraftValues: [AnyHashable]?
     let title: String
     var inSheet = false
     var hasChanges = false
     var saveEnabled: Bool? = nil
     var inlineError: Binding<InvestmentSaveError?>?
+    var draftValues: [AnyHashable]? = nil
     @ViewBuilder let content: Content
     let save: () async throws -> Void
+
+    private var changed: Bool {
+        guard editingDraft, let draftValues else { return hasChanges }
+        return initialDraftValues.map { $0 != draftValues } ?? false
+    }
+
+    private var canSave: Bool {
+        editingDraft ? changed && (saveEnabled ?? true) : saveEnabled ?? hasChanges
+    }
 
     var body: some View {
         Group {
             if inSheet || editingDraft {
-                SettingsSheet(title: title, hasChanges: hasChanges, isBusy: saving, saveEnabled: saveEnabled ?? hasChanges, onSave: commit,
+                SettingsSheet(title: title, hasChanges: changed, isBusy: saving, saveEnabled: canSave, onSave: commit,
                               saveInProgress: saving,
                               saveAccessibilityLabel: editingDraft ? "完成修改并更新预览" : "保存") { form }
             } else {
@@ -168,6 +180,9 @@ private struct InvestmentEditor<Content: View>: View {
         }
         .environment(\.calendar, InvestmentBook.calendar)
         .environment(\.timeZone, InvestmentBook.calendar.timeZone)
+        .onAppear {
+            if editingDraft, initialDraftValues == nil { initialDraftValues = draftValues }
+        }
     }
 
     private var form: some View {
@@ -209,16 +224,10 @@ private func investmentTrim(_ value: String) -> String {
     value.trimmingCharacters(in: .whitespacesAndNewlines)
 }
 
-func investmentDecimal(_ input: String, _ field: String, allowZero: Bool = false, preservesPrecision: Bool = false, unitPrice: Bool = false) throws -> Decimal {
-    let separator = Locale.current.decimalSeparator ?? "."
-    let value = investmentTrim(input).replacingOccurrences(of: separator, with: ".")
-    guard value.range(of: #"^(?:[0-9]+(?:\.[0-9]+)?|\.[0-9]+)$"#, options: .regularExpression) != nil,
-          let decimal = InvestmentPrecision.exactInput(value),
-          decimal <= 1_000_000_000_000, allowZero ? decimal >= 0 : decimal > 0 else {
-        throw InvestmentError.invalid("请输入有效的" + field + "。")
-    }
-    if !preservesPrecision { try InvestmentPrecision.validateInput(decimal, field: field, unitPrice: unitPrice) }
-    return decimal
+func investmentDecimal(_ input: String, _ field: String, allowZero: Bool = false, preservesPrecision: Bool = false,
+                       precision: InvestmentPrecision.InputRule = .amount) throws -> Decimal {
+    try InvestmentPrecision.parseInput(input, field: field, allowZero: allowZero,
+                                       preservesPrecision: preservesPrecision, rule: precision)
 }
 
 struct InvestmentAccountEditor: View {
@@ -232,7 +241,8 @@ struct InvestmentAccountEditor: View {
 
     var body: some View {
         InvestmentEditor(title: editingAccount == nil ? "添加账户" : "编辑账户", inSheet: true,
-                         hasChanges: !name.isEmpty || currency != nil || type != nil) {
+                         hasChanges: !name.isEmpty || currency != nil || type != nil,
+                         draftValues: [name, currency?.rawValue ?? "", type?.rawValue ?? "", position]) {
             Section {
                 InvestmentField("账户名称", text: $name, focusesOnRowTap: true)
                 if let editingAccount {
@@ -306,7 +316,8 @@ struct InvestmentTransferEditor: View {
         let current = store.book.account(account.id).flatMap { try? store.book.ledger($0).cash }
         let code = account.currency.rawValue
         InvestmentEditor(title: "划出资金", inSheet: true,
-                         hasChanges: targetID != nil || !amount.isEmpty || !remaining.isEmpty || !received.isEmpty) {
+                         hasChanges: targetID != nil || !amount.isEmpty || !remaining.isEmpty || !received.isEmpty,
+                         draftValues: [date, targetID?.uuidString ?? "", amount, remaining, received]) {
             Section(account.name) {
                 InvestmentDatePicker("划转日期", selection: $date, latest: InvestmentBook.day())
                 LabeledContent("当前现金余额", value: InvestmentText.money(current, account.currency))
@@ -351,7 +362,8 @@ struct InvestmentCashEditor: View {
 
     var body: some View {
         InvestmentEditor(title: kind == .adjustment ? "调整余额" : kind.rawValue + "资金", inSheet: true,
-                         hasChanges: !amount.isEmpty || InvestmentBook.day(date) != InvestmentBook.day()) {
+                         hasChanges: !amount.isEmpty || InvestmentBook.day(date) != InvestmentBook.day(),
+                         draftValues: [amount, date]) {
             Section(account.name) {
                 InvestmentField((kind == .adjustment ? "调整后余额" : "金额") + "（" + account.currency.rawValue + "）",
                                 text: $amount, keyboard: .decimalPad)
@@ -402,7 +414,8 @@ struct InvestmentHoldingAdjustmentEditor: View {
         let day = InvestmentBook.day(date)
         let ledger = store.book.account(account.id).flatMap { try? store.book.ledger($0, through: day) }
         return InvestmentEditor(title: supportsDividends ? "记分红" : "调整余额", inSheet: true,
-                                hasChanges: !cash.isEmpty || !shares.isEmpty || !balance.isEmpty) {
+                                hasChanges: !cash.isEmpty || !shares.isEmpty || !balance.isEmpty,
+                                draftValues: [date, cash, shares, balance]) {
             Section(asset.kind.usesBalance ? asset.displayName : asset.displayName + " · " + asset.displayCode) {
                 InvestmentDatePicker(supportsDividends ? "到账日期" : "调整日期", selection: $date, latest: InvestmentBook.day())
                 if supportsDividends {
@@ -464,10 +477,11 @@ struct InvestmentFuturesSettlementEditor: View {
 
     var body: some View {
         InvestmentEditor(title: "记实际结算", inSheet: true, hasChanges: !price.isEmpty || !amount.isEmpty,
-                         saveEnabled: !price.isEmpty && !amount.isEmpty) {
+                         saveEnabled: !price.isEmpty && !amount.isEmpty,
+                         draftValues: [date, price, amount, isLoss]) {
             Section(asset.displayName) {
                 InvestmentDatePicker("结算日期", selection: $date, latest: InvestmentBook.day())
-                InvestmentField("结算价（CNY）", text: $price, keyboard: .decimalPad, unitPrice: true)
+                InvestmentField("结算价（CNY）", text: $price, keyboard: .decimalPad, precision: .unitPrice)
                 Picker("资金方向", selection: $isLoss) {
                     Text("入账").tag(false)
                     Text("扣款").tag(true)
@@ -476,7 +490,7 @@ struct InvestmentFuturesSettlementEditor: View {
             }
         } save: {
             let value = try investmentDecimal(amount, "实际结算金额", allowZero: true)
-            let price = try investmentDecimal(price, "结算价", unitPrice: true)
+            let price = try investmentDecimal(price, "结算价", precision: .unitPrice)
             if let editorDraft {
                 try await editorDraft.submit(["date": InvestmentEditorDraft.day.string(from: date), "price": InvestmentEditorDraft.text(price),
                     "amount": InvestmentEditorDraft.text(value), "direction": isLoss ? "decrease" : "increase"])
@@ -511,7 +525,8 @@ struct InvestmentMarginTransferEditor: View {
         let ledger = store.book.account(account.id).flatMap { try? store.book.ledger($0, through: day) }
         let margin = ledger?.positions[asset.id].flatMap { $0.quantity > 0 ? $0.margin : nil }
         let available = ledger?.cash
-        return InvestmentEditor(title: "调整保证金", inSheet: true, hasChanges: !amount.isEmpty) {
+        return InvestmentEditor(title: "调整保证金", inSheet: true, hasChanges: !amount.isEmpty,
+                                draftValues: [date, direction.rawValue, amount]) {
             Section {
                 InvestmentDatePicker("划转日期", selection: $date, latest: InvestmentBook.day())
                 if let margin, let available {
@@ -571,6 +586,10 @@ private struct InvestmentAssetDraft: Equatable {
     var contractSide = InvestmentContractSide.long
     private(set) var stockConnect = false
     private(set) var selectedAsset: InvestmentAsset?
+
+    var editorValues: [AnyHashable] {
+        [name, code, market, kind.rawValue, multiplier, contractSide.rawValue, stockConnect, selectedAsset?.id.uuidString ?? ""]
+    }
 
     var entryType: EntryType {
         get {
@@ -936,7 +955,7 @@ private struct InvestmentTradeFields: View {
             InvestmentField("实收收益（" + currency.rawValue + "）", text: $price, keyboard: .decimalPad)
         } else {
             InvestmentField("数量（" + kind.unit + "）", text: $quantity, keyboard: .decimalPad, preservesPrecision: true)
-            InvestmentField((stockConnect ? (event == .sell ? "卖出单价" : "买入单价") : "成交价") + "（" + currency.rawValue + "）", text: $price, keyboard: .decimalPad, unitPrice: true)
+            InvestmentField((stockConnect ? (event == .sell ? "卖出单价" : "买入单价") : "成交价") + "（" + currency.rawValue + "）", text: $price, keyboard: .decimalPad, precision: .price(for: kind))
         }
         if stockConnect {
             InvestmentField("清算金额（CNY）", text: $settlement, keyboard: .decimalPad)
@@ -972,7 +991,7 @@ private struct InvestmentTradeFields: View {
         let quantity = kind == .insurance ? 1 : try investmentDecimal(self.quantity, "数量", preservesPrecision: true)
         try kind.validateTradeQuantity(quantity, currency: currency)
         return InvestmentEvent(day: day, kind: event, assetID: assetID,
-            quantity: quantity, price: try investmentDecimal(price, "成交金额或价格", allowZero: kind == .insurance && event == .sell, unitPrice: kind.usesUnitPrice),
+            quantity: quantity, price: try investmentDecimal(price, "成交金额或价格", allowZero: kind == .insurance && event == .sell, precision: .price(for: kind)),
             margin: kind.usesMargin && event != .sell ? try investmentDecimal(margin, "保证金") : 0,
             settledAmount: stockConnect ? try investmentDecimal(settlement, "清算金额") : nil,
             fee: showsFee && !investmentTrim(fee).isEmpty ? try investmentDecimal(fee, "交易费用", allowZero: true) : nil)
@@ -1056,7 +1075,9 @@ struct InvestmentAssetEditor: View {
             || !settlement.isEmpty || !annualRate.isEmpty || autoFundCash || InvestmentBook.day(date) != InvestmentBook.day()
         return InvestmentEditor(title: watchOnly ? "添加关注" : "录入资产", inSheet: true,
                                 hasChanges: hasChanges, saveEnabled: watchOnly ? watchResult?.quotes.last != nil : nil,
-                                inlineError: watchOnly ? nil : $saveError) {
+                                inlineError: watchOnly ? nil : $saveError,
+                                draftValues: draft.editorValues + [watchCurrency.rawValue, date, quantity, price, fee, margin,
+                                    settlement, manualValue, annualRate, maturity, autoFundCash]) {
             Section(account?.name ?? "标的信息") {
                 if watchOnly {
                     Picker("报价币种", selection: watchCurrencySelection) {
@@ -1218,7 +1239,8 @@ struct InvestmentTradeEditor: View {
             settlement: $settlement)
         let title = asset.kind.usesBalance || kind == .insuranceWithdrawal ? asset.transactionTitle(kind) : "记" + asset.transactionTitle(kind)
         let hasChanges = !price.isEmpty || !settlement.isEmpty || autoFundCash || date != InvestmentBook.day()
-        return InvestmentEditor(title: title, inSheet: asset.kind.usesBalance || kind == .insuranceWithdrawal, hasChanges: hasChanges) {
+        return InvestmentEditor(title: title, inSheet: asset.kind.usesBalance || kind == .insuranceWithdrawal, hasChanges: hasChanges,
+                                draftValues: [date, quantity, price, fee, margin, settlement, autoFundCash]) {
             Section(asset.displayName + " · " + account.name) {
                 if kind == .buy { InvestmentAutomaticCashFunding(enabled: $autoFundCash) }
                 trade
@@ -1262,7 +1284,8 @@ struct InvestmentDepositTermsEditor: View {
     var body: some View {
         let rate = try? investmentDecimal(annualRate, "年利率", allowZero: true) / 100
         let changed = rate != asset.depositTerms?.annualRate || maturity != asset.depositTerms?.maturity
-        return InvestmentEditor(title: "编辑存款信息", inSheet: true, hasChanges: changed, saveEnabled: changed && rate != nil) {
+        return InvestmentEditor(title: "编辑存款信息", inSheet: true, hasChanges: changed, saveEnabled: changed && rate != nil,
+                                draftValues: [annualRate, maturity]) {
             Section(asset.displayName) {
                 InvestmentField("年利率（%）", text: $annualRate, keyboard: .decimalPad)
                 InvestmentDatePicker("到期日", selection: $maturity)
@@ -1299,7 +1322,7 @@ struct InvestmentQuoteEditor: View {
     var body: some View {
         Group {
             if asset.kind.supportsManualQuote {
-                InvestmentEditor(title: "保单现金价值", hasChanges: !price.isEmpty) {
+                InvestmentEditor(title: "保单现金价值", hasChanges: !price.isEmpty, draftValues: [date, price]) {
                     quoteContent
                 } save: {
                     let price = try investmentDecimal(price, asset.kind == .insurance ? "现金价值" : "报价", allowZero: asset.kind == .insurance)
@@ -1432,7 +1455,9 @@ struct InvestmentPlanEditor: View {
             return (try? $0.validateEntry(in: account)) != nil
         }.sorted { $0.code < $1.code }
         let existing = assets.first { draft.matches($0, currency: currency) }
-        return InvestmentEditor(title: plan == nil ? "新建定投任务" : "编辑定投任务", inSheet: true, hasChanges: hasChanges) {
+        return InvestmentEditor(title: plan == nil ? "新建定投任务" : "编辑定投任务", inSheet: true, hasChanges: hasChanges,
+                                draftValues: draft.editorValues + [accountID.uuidString, buy, assetID?.uuidString ?? "",
+                                    amount, frequency.rawValue, scheduleDay, enabled]) {
             Section {
                 Picker("任务类型", selection: $buy) {
                     Text("定期转入").tag(false)
@@ -1554,7 +1579,8 @@ struct InvestmentAssetInfoEditor: View {
         InvestmentEditor(title: creating ? "标的信息" : "修改标的资料", inSheet: true,
                          hasChanges: draft.name != asset.name || draft.normalizedCode != asset.code || draft.venue != asset.market
                             || annualRate != InvestmentEditorDraft.text(asset.depositTerms.map { $0.annualRate * 100 })
-                            || maturity != (asset.depositTerms?.maturity ?? InvestmentBook.day())) {
+                            || maturity != (asset.depositTerms?.maturity ?? InvestmentBook.day()),
+                         draftValues: draft.editorValues + [annualRate, maturity]) {
             Section {
                 LabeledContent("报价币种", value: asset.currency.rawValue)
                 if asset.kind.requiresCatalog || creating {

@@ -241,7 +241,7 @@ struct InvestmentServerRecords {
             for (field, value, oldValue) in fields {
                 if let value, value != oldValue {
                     try InvestmentPrecision.validateInput(value, field: field,
-                        unitPrice: field == "成交价格" && book.asset(event.assetID)?.kind.usesUnitPrice == true)
+                        rule: field == "成交价格" ? .price(for: book.asset(event.assetID)?.kind) : .amount)
                 }
             }
         }

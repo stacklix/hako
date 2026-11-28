@@ -17,7 +17,11 @@ internal sealed record WorkshopApplication(string Id, string Name, string Path);
 internal sealed record WorkshopSession(string Id, string Title, string ApplicationId, string Cwd,
     string Preview, long UpdatedAt, string State, string? OperationId, string? CompletionId = null, long LastSentAt = 0, WorkshopThreadAccess? Access = null, string? ParentThreadId = null);
 internal sealed record WorkshopEvent(string Kind, string Id, string Text, string Role = "", string State = "", bool Truncated = false, string? ReplacesId = null, WorkshopAsyncQuestion[]? Questions = null, string? QuestionId = null,
-    string? TurnId = null, long? StartedAtMs = null, long? CompletedAtMs = null, WorkshopTurn? Turn = null);
+    string? TurnId = null, long? StartedAtMs = null, long? CompletedAtMs = null, WorkshopTurn? Turn = null, WorkshopPlanStep[]? Plan = null,
+    WorkshopAgentActivity[]? Agents = null);
+internal sealed record WorkshopPlanStep(string Step, string Status);
+internal sealed record WorkshopAgentActivity(string AgentId, string Name, string Action, string Task, string State, string Summary,
+    WorkshopTurn? Turn = null);
 internal sealed record WorkshopTurn(string Id, string State, long? StartedAt, long? CompletedAt, long? DurationMs);
 internal sealed record WorkshopAsyncQuestion(string Title, string[] Options);
 internal sealed record WorkshopArtifact(string Id, string Name, string Path, string ThreadId);
@@ -44,6 +48,7 @@ internal sealed partial class CodeWorkshop : IAsyncDisposable
     private readonly CancellationTokenSource stopping = new();
     private CodexAppServer? metadata;
     private readonly Func<CancellationToken, Task<CodexAppServer>> startServer;
+    private readonly WorkshopWorkers workers;
     private readonly Dictionary<string, WorkshopJob> jobs = new();
     private readonly Dictionary<string, WorkshopArtifact> artifacts = new();
     private readonly Dictionary<string, string> artifactRoots = new();
@@ -53,7 +58,8 @@ internal sealed partial class CodeWorkshop : IAsyncDisposable
     private readonly Func<string, CodexWriterState> readWriter;
 
     public CodeWorkshop(string storage, string? root = null, string? codexHome = null,
-        Func<CancellationToken, Task<CodexAppServer>>? startServer = null, Func<string, CodexWriterState>? readWriter = null)
+        Func<CancellationToken, Task<CodexAppServer>>? startServer = null, Func<string, CodexWriterState>? readWriter = null,
+        int workerLimit = WorkshopWorkers.DefaultLimit, TimeSpan? workerIdleTimeout = null, int workerWarmCount = 0)
     {
         this.startServer = startServer ?? (token => CodexAppServer.StartAsync(token));
         this.storage = Path.GetFullPath(storage);
@@ -62,6 +68,8 @@ internal sealed partial class CodeWorkshop : IAsyncDisposable
         home = Path.GetFullPath(codexHome ?? Environment.GetEnvironmentVariable("CODEX_HOME") ??
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex"));
         this.readWriter = readWriter ?? (thread => CodexWriterLock.Read(home, thread));
+        workers = new(this.startServer, workerLimit, workerIdleTimeout, warmCount: workerWarmCount,
+            log: (method, elapsed, outcome) => queryLog.Write(method, 0, elapsed, outcome));
     }
 
     private void RecoverJobs()
@@ -196,6 +204,7 @@ internal sealed partial class CodeWorkshop : IAsyncDisposable
         }
         try
         {
+            if (archived) await workers.ReleaseIdleAsync(id, token);
             var thread = await ThreadAsync(id, false, token);
             if (archived && CodexJson.Text(CodexJson.Field(thread, "status"), "type") == "active")
                 throw new WorkshopException("codex_busy", "会话仍在执行任务，请结束后再归档。");
@@ -334,8 +343,11 @@ internal sealed partial class CodeWorkshop : IAsyncDisposable
             var entry = HistoryItem(CodexJson.Field(item, "item"), itemTurn, sent, nextUsed);
             if (entry is null) { offset++; used = nextUsed; currentTurn = itemTurn; continue; }
             entry = WithItemTiming(entry, item, itemTurn);
+            var plan = entry.Role == "user" ? sent.FirstOrDefault(job => job.Id == entry.Id && job.TurnId == itemTurn && job.Plan is not null)?.Plan : null;
             var size = JsonSerializer.SerializeToUtf8Bytes(entry, WorkshopProtocol.Json).Length;
+            if (plan is not null) size += JsonSerializer.SerializeToUtf8Bytes(plan, WorkshopProtocol.Json).Length;
             if (bytes + size > 38 * 1024 && page.Count > 0) break;
+            if (plan is not null && !page.Any(value => value.Id == plan.Id)) page.Insert(0, plan);
             page.Insert(0, entry); bytes += size; offset++; used = nextUsed; currentTurn = itemTurn;
         }
         var turnSummaries = await ReadTurnSummariesAsync(id, page.Select(entry => entry.TurnId).OfType<string>().ToHashSet(), turn, token);
@@ -405,6 +417,7 @@ internal sealed partial class CodeWorkshop : IAsyncDisposable
     {
         var type = CodexJson.Text(item, "type");
         var id = CodexJson.Text(item, "id");
+        if (type is "collabAgentToolCall" or "subAgentActivity") return AgentActivity(item);
         string text;
         var role = "";
         switch (type)
@@ -437,6 +450,45 @@ internal sealed partial class CodeWorkshop : IAsyncDisposable
                     .Take(8).Select(option => CodexJson.Clip(option.GetString()!, 120)).ToArray()))
             .Where(question => !string.IsNullOrWhiteSpace(question.Title)).ToArray() : [];
         return new(type is "commandExecution" or "fileChange" or "plan" or "imageGeneration" ? type : "item", id, CodexJson.Clip(text, 8000), role, CodexJson.Text(item, "status"), text.Length > 8000, Questions: questions.Length > 0 ? questions : null);
+    }
+
+    internal static WorkshopEvent? AgentActivity(JsonElement item)
+    {
+        var id = CodexJson.Text(item, "id");
+        if (id.Length == 0) return null;
+        if (CodexJson.Text(item, "type") == "subAgentActivity")
+        {
+            var agent = CodexJson.Text(item, "agentThreadId");
+            if (!Guid.TryParse(agent, out _)) return null;
+            var action = CodexJson.Text(item, "kind");
+            var state = action switch { "started" => "starting", "completed" => "completed", "interrupted" => "interrupted", _ => "" };
+            return new("subagents", id, "", Agents: [new(agent, "", action, "", state, "")]);
+        }
+        var states = CodexJson.Field(item, "agentsStates");
+        var activity = CodexJson.Text(item, "tool");
+        var agents = CodexJson.Items(CodexJson.Field(item, "receiverThreadIds"))
+            .Where(value => value.ValueKind == JsonValueKind.String && Guid.TryParse(value.GetString(), out _))
+            .Select(value => value.GetString()!).Distinct().Take(8).Select(agent => {
+                var native = CodexJson.Field(states, agent);
+                var state = CodexJson.Text(native, "status") switch {
+                    "pendingInit" => "starting", "errored" => "failed", "shutdown" => "closed", "notFound" => "unknown",
+                    "running" => "running", "completed" => "completed", "interrupted" => "interrupted", _ => ""
+                };
+                return new WorkshopAgentActivity(agent, "", activity, CodexJson.Clip(CodexJson.Text(item, "prompt"), 300),
+                    state, CodexJson.Clip(CodexJson.Text(native, "message"), 300));
+            }).ToArray();
+        return agents.Length == 0 ? null : new("subagents", id, "", Agents: agents);
+    }
+
+    internal static WorkshopEvent? PlanUpdated(JsonElement parameters)
+    {
+        var turn = CodexJson.Text(parameters, "turnId");
+        if (turn.Length == 0) return null;
+        var steps = CodexJson.Items(CodexJson.Field(parameters, "plan")).Take(32)
+            .Select(value => new WorkshopPlanStep(CodexJson.Clip(CodexJson.Text(value, "step"), 256), CodexJson.Text(value, "status")))
+            .Where(value => !string.IsNullOrWhiteSpace(value.Step) && value.Status is "pending" or "inProgress" or "completed").ToArray();
+        return new("plan", "plan-" + turn, CodexJson.Clip(CodexJson.Text(parameters, "explanation"), 600),
+            TurnId: turn, Plan: steps);
     }
 
     internal static WorkshopEvent WithItemTiming(WorkshopEvent entry, JsonElement envelope, string? turnId) => entry with {
@@ -615,6 +667,9 @@ internal sealed partial class CodeWorkshop : IAsyncDisposable
         lock (gate) running = jobs.Values.Select(job => job.Worker)
             .Concat(subagentTasks.Values.Select(index => index.Worker)).OfType<Task>().ToArray();
         await Task.WhenAll(running);
+        lock (gate) running = jobs.Values.Select(job => job.PredictionWork).OfType<Task>().ToArray();
+        await Task.WhenAll(running);
+        await workers.DisposeAsync();
         await metadataGate.WaitAsync();
         try { if (metadata is not null) await metadata.DisposeAsync(); metadata = null; }
         finally { metadataGate.Release(); }

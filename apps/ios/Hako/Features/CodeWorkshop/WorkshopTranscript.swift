@@ -102,7 +102,13 @@ struct WorkshopTranscriptPresentation {
     init(entries: [WorkshopEntry], followups: [WorkshopFollowupState]) {
         var history: [WorkshopEntry] = []
         var queued: [WorkshopEntry] = []
-        for entry in entries where entry.kind != "turn" {
+        var agentTurns: Set<String> = []
+        for entry in entries where entry.kind != "turn" && entry.kind != "subagentGroup" && !(entry.kind == "plan" && entry.plan?.isEmpty == true) {
+            if entry.agents != nil {
+                guard let turn = entry.turnId, entry.agents?.isEmpty == false, agentTurns.insert(turn).inserted else { continue }
+                history.append(WorkshopEntry(kind: "subagentGroup", id: "agents-" + turn, text: "", role: "", state: "", truncated: false, turnId: turn))
+                continue
+            }
             let presented: WorkshopEntry
             if entry.kind == "followup", let status = followups.first(where: { $0.id == entry.id }) {
                 // Give each row the same resolved state used to place it. A
@@ -259,20 +265,24 @@ enum WorkshopTranscriptMerge {
     }
 
     private static func queueAtEnd(_ entries: [WorkshopEntry]) -> [WorkshopEntry] {
-        let presentation = WorkshopTranscriptPresentation(entries: entries, followups: [])
-        return presentation.history + presentation.queued
+        // Reorder raw records only. Presentation synthesizes agent anchors and
+        // hides turn boundaries; writing it back would destroy source metadata.
+        entries.filter { !WorkshopTranscriptPresentation.isQueued($0) }
+            + entries.filter { WorkshopTranscriptPresentation.isQueued($0) }
     }
 }
 
 // Only the newest waiting snapshot for each file is retained. Reading never
 // blocks the caller; pending snapshots also provide read-your-writes semantics.
 final class WorkshopTranscriptDisk: @unchecked Sendable {
+    struct Removal: Sendable { var removed: [WorkshopTranscript]; var retained: [WorkshopTranscript] }
     private struct Pending { let url: URL; let snapshot: WorkshopTranscript; let order: Int }
     private let queue = DispatchQueue(label: "me.stackli.hako.workshop.transcripts", qos: .utility)
     private let readQueue = DispatchQueue(label: "me.stackli.hako.workshop.transcripts.read", qos: .userInitiated, attributes: .concurrent)
     private let lock = NSLock()
     private var pending: [URL: Pending] = [:]
     private var writing: [URL: WorkshopTranscript] = [:]
+    private var archivedSessions: Set<String> = []
     private var scheduled = false
     private var generation = 0
     private var order = 0
@@ -292,18 +302,58 @@ final class WorkshopTranscriptDisk: @unchecked Sendable {
         return pending[url]?.snapshot ?? writing[url]
     }
 
+    private func session(_ key: WorkshopTranscriptKey, in directory: URL) -> String { directory.path + "\n" + key.agentId + "\n" + key.threadId }
+    private func permits(_ key: WorkshopTranscriptKey, at file: URL) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return !archivedSessions.contains(session(key, in: file.deletingLastPathComponent()))
+    }
+    func allow(_ key: WorkshopTranscriptKey, in directory: URL) {
+        lock.lock(); archivedSessions.remove(session(key, in: directory)); lock.unlock()
+    }
+
+    private func blockSession(_ identity: String) -> Removal {
+        lock.lock()
+        defer { lock.unlock() }
+        archivedSessions.insert(identity)
+        let waiting = pending.values.filter { session($0.snapshot.key, in: $0.url.deletingLastPathComponent()) == identity }.map(\.snapshot)
+        let retained = pending.values.filter { session($0.snapshot.key, in: $0.url.deletingLastPathComponent()) != identity }.map(\.snapshot)
+        pending = pending.filter { session($0.value.snapshot.key, in: $0.value.url.deletingLastPathComponent()) != identity }
+        return Removal(removed: waiting, retained: retained)
+    }
+    func removeSession(agentID: String, threadID: String, in directory: URL) async throws -> Removal {
+        let waiting = blockSession(directory.path + "\n" + agentID + "\n" + threadID)
+        return try await withCheckedThrowingContinuation { continuation in
+            queue.async {
+                do {
+                    var snapshots = waiting
+                    let files = (try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? []
+                    for file in files where file.pathExtension == "json" && file.deletingPathExtension().lastPathComponent.count == 64 {
+                        guard let snapshot = Self.load(file) else { continue }
+                        if snapshot.key.agentId == agentID && snapshot.key.threadId == threadID {
+                            snapshots.removed.append(snapshot)
+                            try FileManager.default.removeItem(at: file)
+                        } else { snapshots.retained.append(snapshot) }
+                    }
+                    continuation.resume(returning: snapshots)
+                } catch { continuation.resume(throwing: error) }
+            }
+        }
+    }
+
     func read(_ url: URL, key: WorkshopTranscriptKey) async -> WorkshopTranscript? {
+        guard permits(key, at: url) else { return nil }
         if let snapshot = latest(url) { return snapshot.key == key && snapshot.eventCursor >= 0 ? snapshot : nil }
         return await withCheckedContinuation { continuation in
             readQueue.async {
                 let snapshot = self.latest(url) ?? Self.load(url)
-                continuation.resume(returning: snapshot.flatMap { $0.key == key && $0.eventCursor >= 0 ? $0 : nil })
+                continuation.resume(returning: snapshot.flatMap { self.permits(key, at: url) && $0.key == key && $0.eventCursor >= 0 ? $0 : nil })
             }
         }
     }
 
     func write(_ snapshot: WorkshopTranscript, to url: URL) {
         lock.lock()
+        guard !archivedSessions.contains(session(snapshot.key, in: url.deletingLastPathComponent())) else { lock.unlock(); return }
         order += 1
         pending[url] = Pending(url: url, snapshot: snapshot, order: order)
         guard !scheduled else { lock.unlock(); return }

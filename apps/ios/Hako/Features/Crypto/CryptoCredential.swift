@@ -6,18 +6,14 @@ struct CryptoCredential: Codable {
     var secret = ""
     var configured: Bool { !key.isEmpty && !secret.isEmpty }
     static func twelveDataKey() throws -> String {
-        guard let data = try SecureStorage.namespace("me.stackli.hako.investment").read(account: "twelve-data") else { return "" }
-        guard let key = String(data: data, encoding: .utf8) else { throw HakoError(message: "无法读取已保存的 Twelve Data API Key。") }
-        return key
+        try HakoTokens.read("twelve-data.api-key")
     }
     static func load(_ exchange: String) throws -> Self {
-        guard let data = try SecureStorage.namespace("me.stackli.hako.crypto").read(account: exchange) else { return Self() }
-        return try JSONDecoder().decode(Self.self, from: data)
+        let values = try HakoTokens.readGroup(containing: exchange + ".api-key")
+        let key = values[exchange + ".api-key"] ?? ""
+        return Self(key: key, secret: values[exchange + ".secret-key"] ?? key)
     }
-    func save(_ exchange: String) throws {
-        guard key.isEmpty == secret.isEmpty else { throw HakoError(message: "请同时填写 API Key 与 Secret Key。") }
-        try SecureStorage.namespace("me.stackli.hako.crypto").save(JSONEncoder().encode(self), account: exchange, accessibility: .afterFirstUnlock)
-    }
+
 }
 
 extension CryptoDay {

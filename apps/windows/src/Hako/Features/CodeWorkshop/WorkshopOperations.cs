@@ -45,6 +45,11 @@ internal sealed class WorkshopJob
     public string? EffectiveModel { get; set; }
     public string? EffectiveReasoningEffort { get; set; }
     public WorkshopContextUsage? ContextUsage { get; set; }
+    public WorkshopInputPrediction? Prediction { get; set; }
+    [JsonIgnore] public bool PredictionPending { get; set; }
+    [JsonIgnore] public Task? PredictionWork { get; set; }
+    [JsonIgnore] public CancellationTokenSource? PredictionStop { get; set; }
+    public WorkshopEvent? Plan { get; set; }
     public int Revision { get; set; }
     public long QueueOrder { get; set; }
     public string? NotificationScope { get; set; }
@@ -58,6 +63,7 @@ internal sealed class WorkshopJob
     [JsonIgnore] public HashSet<string> Answered { get; } = new();
     [JsonIgnore] public SemaphoreSlim Control { get; } = new(1, 1);
     [JsonIgnore] public bool StopRequested { get; set; }
+    [JsonIgnore] public CancellationTokenSource WorkerWait { get; } = new();
     [JsonIgnore] public bool OwnsThreadWriter { get; set; }
     [JsonIgnore] public bool AcquiringThreadWriter { get; set; }
     [JsonIgnore] public List<JsonElement> PendingEvents { get; } = new();
@@ -199,139 +205,158 @@ internal sealed partial class CodeWorkshop
     private async Task ExecuteAsync(WorkshopJob job, string name, string message, string model, string permission, string[] images, string serviceTier)
     {
         var startupStage = "启动 Codex";
+        CodexAppServer? predictionServer = null;
         try
         {
+            CancelPredictions(job.ThreadId);
             RequireThreadAccess(job.ThreadId);
-            await using (var server = await startServer(stopping.Token))
+            using var acquisition = CancellationTokenSource.CreateLinkedTokenSource(stopping.Token, job.WorkerWait.Token);
+            var configuration = JsonSerializer.Serialize(new { permission, model, serviceTier, job.ReasoningEffort });
+            await using (var worker = await workers.AcquireAsync(job.ThreadId, configuration, acquisition.Token))
             {
+                var server = worker.Server;
+                queryLog.Write(worker.Reused ? "worker/reuse" : worker.Prewarmed ? "worker/warm" : "worker/start", 0, 0, "completed");
                 job.Server = server;
-                server.Event += value => Receive(job, value);
-                var options = ThreadOptions(permission);
-                if (job.ParentThreadId is not null || SidechatRoot(job.ThreadId) is not null)
+                void ReceiveEvent(JsonElement value) => Receive(job, value);
+                server.Event += ReceiveEvent;
+                try
                 {
-                    options["sandbox"] = "read-only";
-                    options["approvalPolicy"] = "never";
-                }
-                if (model.Length > 0) options["model"] = model;
-                if (serviceTier.Length > 0) options["serviceTier"] = serviceTier;
-                JsonElement settings;
-                if (job.ThreadId is null)
-                {
-                    if (job.SystemPrompt is not null) options["developerInstructions"] = job.SystemPrompt;
-                    options["cwd"] = job.Cwd;
-                    startupStage = job.ParentThreadId is null ? "创建会话" : "创建侧聊";
-                    if (job.ParentThreadId is not null)
+                    var options = ThreadOptions(permission);
+                    if (job.ParentThreadId is not null || SidechatRoot(job.ThreadId) is not null)
                     {
-                        var parent = await ThreadAsync(job.ParentThreadId, false, stopping.Token);
-                        if (ApplicationFor(CodexJson.Text(parent, "cwd"))?.Id != job.ApplicationId || SidechatRoot(job.ParentThreadId) is not null)
-                            throw new WorkshopException("codex_workspace_invalid", "侧聊来源与所选主会话不一致。");
-                        job.Cwd = CodexJson.Text(parent, "cwd");
+                        options["sandbox"] = "read-only";
+                        options["approvalPolicy"] = "never";
+                    }
+                    if (model.Length > 0) options["model"] = model;
+                    if (serviceTier.Length > 0) options["serviceTier"] = serviceTier;
+                    JsonElement settings;
+                    if (job.ThreadId is null)
+                    {
+                        if (job.SystemPrompt is not null) options["developerInstructions"] = job.SystemPrompt;
                         options["cwd"] = job.Cwd;
-                        options["threadId"] = job.ParentThreadId;
+                        startupStage = job.ParentThreadId is null ? "创建会话" : "创建侧聊";
+                        if (job.ParentThreadId is not null)
+                        {
+                            var parent = await ThreadAsync(job.ParentThreadId, false, stopping.Token);
+                            if (ApplicationFor(CodexJson.Text(parent, "cwd"))?.Id != job.ApplicationId || SidechatRoot(job.ParentThreadId) is not null)
+                                throw new WorkshopException("codex_workspace_invalid", "侧聊来源与所选主会话不一致。");
+                            job.Cwd = CodexJson.Text(parent, "cwd");
+                            options["cwd"] = job.Cwd;
+                            options["threadId"] = job.ParentThreadId;
+                            options["excludeTurns"] = true;
+                            options["deferGoalContinuation"] = true;
+                            options["threadSource"] = "hako-sidechat";
+                        }
+                        lock (gate) job.AcquiringThreadWriter = true;
+                        var reply = await server.RequestAsync(job.ParentThreadId is null ? "thread/start" : "thread/fork", options, stopping.Token);
+                        settings = reply;
+                        var createdId = CodexJson.Text(CodexJson.Field(reply, "thread"), "id");
+                        if (!Guid.TryParse(createdId, out _) || createdId == job.ParentThreadId) throw new InvalidDataException("Codex 未返回独立会话 ID。");
+                        lock (gate)
+                        {
+                            // Keep ownership/relationship even if later initialization fails.
+                            job.ThreadId = createdId;
+                            catalogPages.Clear();
+                            Persist(job);
+                        }
+                        if (job.ParentThreadId is not null)
+                        {
+                            // Do not let the inherited goal start work in the side conversation.
+                            await server.RequestAsync("thread/goal/clear", new { threadId = createdId }, stopping.Token);
+                            var inherited = await server.RequestAsync("thread/turns/list", new { threadId = createdId, limit = 1,
+                                sortDirection = "desc", itemsView = "summary" }, stopping.Token);
+                            job.InheritedTurnId = CodexJson.Text(CodexJson.Items(CodexJson.Field(inherited, "data")).FirstOrDefault(), "id");
+                        }
+                        lock (gate)
+                        {
+                            job.ThreadId = createdId;
+                            catalogPages.Clear();
+                            Persist(job);
+                        }
+                        if (name.Length > 0)
+                        {
+                            startupStage = "设置会话名称";
+                            await server.RequestAsync("thread/name/set", new { threadId = job.ThreadId, name }, stopping.Token);
+                        }
+                    }
+                    else
+                    {
+                        startupStage = "读取会话";
+                        var thread = await ThreadAsync(job.ThreadId, false, stopping.Token);
+                        var cwd = CodexJson.Text(thread, "cwd");
+                        if (ApplicationFor(cwd)?.Id != job.ApplicationId) throw new WorkshopException("codex_workspace_invalid", "会话与所选应用不一致，请刷新会话列表。");
+                        job.Cwd = cwd;
+                        var threadName = CodexJson.Text(thread, "name");
+                        var preview = CodexJson.Text(thread, "preview");
+                        job.SessionName = NotificationText(threadName.Length > 0 ? threadName : preview.Length > 0 ? preview : "未命名会话", 120);
+                        options["threadId"] = job.ThreadId;
                         options["excludeTurns"] = true;
-                        options["deferGoalContinuation"] = true;
-                        options["threadSource"] = "hako-sidechat";
+                        if (worker.Reused) settings = worker.Settings;
+                        else
+                        {
+                            startupStage = "恢复会话";
+                            lock (gate) job.AcquiringThreadWriter = true;
+                            settings = await server.RequestAsync("thread/resume", options, stopping.Token);
+                        }
                     }
-                    lock (gate) job.AcquiringThreadWriter = true;
-                    var reply = await server.RequestAsync(job.ParentThreadId is null ? "thread/start" : "thread/fork", options, stopping.Token);
-                    settings = reply;
-                    var createdId = CodexJson.Text(CodexJson.Field(reply, "thread"), "id");
-                    if (!Guid.TryParse(createdId, out _) || createdId == job.ParentThreadId) throw new InvalidDataException("Codex 未返回独立会话 ID。");
+                    worker.Bind(job.ThreadId!, settings);
                     lock (gate)
                     {
-                        // Keep ownership/relationship even if later initialization fails.
-                        job.ThreadId = createdId;
-                        catalogPages.Clear();
+                        job.OwnsThreadWriter = true;
+                        job.AcquiringThreadWriter = false;
+                        if (job.StopRequested) throw new OperationCanceledException();
+                        job.Submitted = true;
+                        job.State = "running";
                         Persist(job);
                     }
-                    if (job.ParentThreadId is not null)
+                    if (job.IsCompaction)
                     {
-                        // Do not let the inherited goal start work in the side conversation.
-                        await server.RequestAsync("thread/goal/clear", new { threadId = createdId }, stopping.Token);
-                        var inherited = await server.RequestAsync("thread/turns/list", new { threadId = createdId, limit = 1,
-                            sortDirection = "desc", itemsView = "summary" }, stopping.Token);
-                        job.InheritedTurnId = CodexJson.Text(CodexJson.Items(CodexJson.Field(inherited, "data")).FirstOrDefault(), "id");
+                        startupStage = "压缩上下文";
+                        await server.RequestAsync("thread/compact/start", new { threadId = job.ThreadId }, stopping.Token);
                     }
-                    lock (gate)
+                    else
                     {
-                        job.ThreadId = createdId;
-                        catalogPages.Clear();
-                        Persist(job);
+                        var input = new List<object>();
+                        if (!string.IsNullOrWhiteSpace(message)) input.Add(new { type = "text", text = message });
+                        input.AddRange(images.Select(image => (object)new { type = "localImage", path = UploadPath(image) }));
+                        var turnOptions = new Dictionary<string, object> { ["threadId"] = job.ThreadId!, ["clientUserMessageId"] = job.Id, ["input"] = input };
+                        if (SidechatRoot(job.ThreadId) is not null)
+                            turnOptions["additionalContext"] = new Dictionary<string, object> { ["hako.sidechat"] = new {
+                                kind = "application", value = "这是基于主会话创建时上下文的独立侧聊。只讨论用户当前的问题，不继续执行主会话的开发、构建或部署任务。需要修改主任务时，请给出可发回主会话的建议。本会话使用只读权限。" } };
+                        if (model.Length > 0) turnOptions["model"] = model;
+                        if (serviceTier.Length > 0) turnOptions["serviceTier"] = serviceTier;
+                        if (job.ReasoningEffort.Length > 0) turnOptions["effort"] = job.ReasoningEffort;
+                        startupStage = "启动轮次";
+                        JsonElement turn = default;
+                        try { turn = await server.RequestAsync("turn/start", turnOptions, stopping.Token); }
+                        catch (TimeoutException) when (job.TurnId is not null && !stopping.IsCancellationRequested)
+                        {
+                            // A matching clientId already proved acceptance. Keep the
+                            // worker alive for its events instead of aborting the turn
+                            // just because the RPC acknowledgement was delayed.
+                            queryLog.Write("turn/start", 0, 0, "ack_timeout_accepted");
+                        }
+                        lock (gate)
+                        {
+                            if (turn.ValueKind != JsonValueKind.Undefined)
+                                BindTurn(job, CodexJson.Text(CodexJson.Field(turn, "turn"), "id"));
+                            job.EffectiveModel = CodexJson.Text(settings, "model");
+                            job.EffectiveReasoningEffort = job.ReasoningEffort.Length > 0 ? job.ReasoningEffort : CodexJson.Text(settings, "reasoningEffort");
+                            Persist(job);
+                        }
                     }
-                    if (name.Length > 0)
-                    {
-                        startupStage = "设置会话名称";
-                        await server.RequestAsync("thread/name/set", new { threadId = job.ThreadId, name }, stopping.Token);
-                    }
+                    if (job.StopRequested) await InterruptAsync(job, stopping.Token);
+                    await job.Completed.Task.WaitAsync(stopping.Token);
+                    // A steering RPC owns Control until its result has been recorded.
+                    await job.Control.WaitAsync(stopping.Token);
+                    job.Control.Release();
+                    worker.Retain = true;
+                    predictionServer = server;
                 }
-                else
-                {
-                    startupStage = "读取会话";
-                    var thread = await ThreadAsync(job.ThreadId, false, stopping.Token);
-                    var cwd = CodexJson.Text(thread, "cwd");
-                    if (ApplicationFor(cwd)?.Id != job.ApplicationId) throw new WorkshopException("codex_workspace_invalid", "会话与所选应用不一致，请刷新会话列表。");
-                    job.Cwd = cwd;
-                    var threadName = CodexJson.Text(thread, "name");
-                    var preview = CodexJson.Text(thread, "preview");
-                    job.SessionName = NotificationText(threadName.Length > 0 ? threadName : preview.Length > 0 ? preview : "未命名会话", 120);
-                    options["threadId"] = job.ThreadId;
-                    options["excludeTurns"] = true;
-                    startupStage = "恢复会话";
-                    lock (gate) job.AcquiringThreadWriter = true;
-                    settings = await server.RequestAsync("thread/resume", options, stopping.Token);
-                }
-                lock (gate)
-                {
-                    job.OwnsThreadWriter = true;
-                    job.AcquiringThreadWriter = false;
-                    if (job.StopRequested) throw new OperationCanceledException();
-                    job.Submitted = true;
-                    job.State = "running";
-                    Persist(job);
-                }
-                if (job.IsCompaction)
-                {
-                    startupStage = "压缩上下文";
-                    await server.RequestAsync("thread/compact/start", new { threadId = job.ThreadId }, stopping.Token);
-                }
-                else
-                {
-                    var input = new List<object>();
-                    if (!string.IsNullOrWhiteSpace(message)) input.Add(new { type = "text", text = message });
-                    input.AddRange(images.Select(image => (object)new { type = "localImage", path = UploadPath(image) }));
-                    var turnOptions = new Dictionary<string, object> { ["threadId"] = job.ThreadId!, ["clientUserMessageId"] = job.Id, ["input"] = input };
-                    if (SidechatRoot(job.ThreadId) is not null)
-                        turnOptions["additionalContext"] = new Dictionary<string, object> { ["hako.sidechat"] = new {
-                            kind = "application", value = "这是基于主会话创建时上下文的独立侧聊。只讨论用户当前的问题，不继续执行主会话的开发、构建或部署任务。需要修改主任务时，请给出可发回主会话的建议。本会话使用只读权限。" } };
-                    if (model.Length > 0) turnOptions["model"] = model;
-                    if (serviceTier.Length > 0) turnOptions["serviceTier"] = serviceTier;
-                    if (job.ReasoningEffort.Length > 0) turnOptions["effort"] = job.ReasoningEffort;
-                    startupStage = "启动轮次";
-                    JsonElement turn = default;
-                    try { turn = await server.RequestAsync("turn/start", turnOptions, stopping.Token); }
-                    catch (TimeoutException) when (job.TurnId is not null && !stopping.IsCancellationRequested)
-                    {
-                        // A matching clientId already proved acceptance. Keep the
-                        // worker alive for its events instead of aborting the turn
-                        // just because the RPC acknowledgement was delayed.
-                        queryLog.Write("turn/start", 0, 0, "ack_timeout_accepted");
-                    }
-                    lock (gate)
-                    {
-                        if (turn.ValueKind != JsonValueKind.Undefined)
-                            BindTurn(job, CodexJson.Text(CodexJson.Field(turn, "turn"), "id"));
-                        job.EffectiveModel = CodexJson.Text(settings, "model");
-                        job.EffectiveReasoningEffort = job.ReasoningEffort.Length > 0 ? job.ReasoningEffort : CodexJson.Text(settings, "reasoningEffort");
-                        Persist(job);
-                    }
-                }
-                if (job.StopRequested) await InterruptAsync(job, stopping.Token);
-                await job.Completed.Task.WaitAsync(stopping.Token);
-                // A steering RPC owns Control until its result has been recorded.
-                await job.Control.WaitAsync(stopping.Token);
-                job.Control.Release();
+                finally { server.Event -= ReceiveEvent; }
             }
-            // Disposal closes the worker's thread writer before reporting handoff readiness.
+            // Only this turn's handler/control is released. The retained process
+            // keeps thread ownership until idle expiry, eviction or archive.
             lock (gate)
             {
                 job.OwnsThreadWriter = false;
@@ -339,6 +364,7 @@ internal sealed partial class CodeWorkshop
                 if (job.State == "finishing") job.State = job.Outcome;
                 job.Server = null;
                 job.Approvals.Clear();
+                if (predictionServer is not null) StartPrediction(job, predictionServer);
                 Persist(job);
                 if (job.RootId is not null) AppendFollowup(job);
             }
@@ -355,7 +381,8 @@ internal sealed partial class CodeWorkshop
                 job.PendingEvents.Clear();
                 var writerConflict = e.Message.Contains("active writer", StringComparison.OrdinalIgnoreCase) || e.Message.Contains("thread-store conflict", StringComparison.OrdinalIgnoreCase);
                 var rejected = job.Submitted && e is CodexRpcException && job.TurnId is null;
-                job.State = writerConflict || !job.Submitted || rejected ? "failed" : "unknown";
+                job.State = job.StopRequested && !job.Submitted ? "interrupted" :
+                    writerConflict || !job.Submitted || rejected ? "failed" : "unknown";
                 job.Outcome = job.State;
                 job.Message = writerConflict ? "其他客户端占用此会话。释放会话后，再发送新消息。" :
                     e is WorkshopException action ? action.Message :
@@ -410,6 +437,8 @@ internal sealed partial class CodeWorkshop
             var parameters = CodexJson.Field(message, "params");
             if (method == "hako/connectionClosed")
             { job.Completed.TrySetException(new IOException("Codex 连接中断。")); return; }
+            if (method is "thread/closed" or "thread/archived" && CodexJson.Text(parameters, "threadId") == job.ThreadId)
+            { job.Completed.TrySetException(new IOException("Codex 会话已卸载。")); return; }
             // Restored usage may arrive during resume, before this job submits
             // its input. It is thread metadata, not a replayed task completion.
             if (method == "thread/tokenUsage/updated" && CodexJson.Text(parameters, "threadId") == job.ThreadId &&
@@ -471,6 +500,14 @@ internal sealed partial class CodeWorkshop
             }
             switch (method)
             {
+                case "turn/plan/updated":
+                    if (PlanUpdated(parameters) is { } plan)
+                    {
+                        job.Plan = plan;
+                        Append(job, plan);
+                        Persist(job);
+                    }
+                    break;
                 case "thread/tokenUsage/updated":
                     job.ContextUsage = WorkshopContextUsage.FromUsage(CodexJson.Field(parameters, "tokenUsage"),
                         DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
@@ -648,6 +685,7 @@ internal sealed partial class CodeWorkshop
             }
             if (!job.Active || job.StopRequested) return Summary(job);
             job.StopRequested = true;
+            job.WorkerWait.Cancel();
         }
         try { if (job.TurnId is not null) await InterruptAsync(job, stopping.Token); }
         catch (Exception)

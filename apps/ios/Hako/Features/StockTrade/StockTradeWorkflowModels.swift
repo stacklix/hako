@@ -60,11 +60,13 @@ struct StockTradeWorkflowTask: Decodable, Identifiable, Sendable {
     let result: StockTradePublishedRun?
     let monitorResult: StockTradeMonitorActivation?
     let events: [Event]
+    let configuration: StockTradeStrategyConfiguration?
     func validated() throws -> Self {
         guard id.count == 32, id.allSatisfy({ $0.isHexDigit && !$0.isUppercase }),
               (["pending"] + kind.phases).contains(phase),
               events.count <= 100, Set(events.map(\.sequence)).count == events.count,
               events.allSatisfy({ $0.message.count <= 500 }),
+              configuration == nil || configuration!.valid,
               state != .succeeded || kind != .full && kind != .publish || result?.status == "complete",
               state != .succeeded || kind != .monitor || monitorResult?.valid == true
         else { throw StockTradeFailure.invalidResponse }

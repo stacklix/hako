@@ -7,7 +7,8 @@ using System.Threading.Tasks;
 namespace Hako.Platform;
 
 internal sealed record WorkshopSubagent(string Id, string Name, string Role, string Task, string State,
-    string Model, string ReasoningEffort, long UpdatedAt, string TaskState = "loading", string TaskVersion = "");
+    string Model, string ReasoningEffort, long UpdatedAt, string TaskState = "loading", string TaskVersion = "",
+    WorkshopTurn? Turn = null, string Summary = "");
 
 internal sealed partial class CodeWorkshop
 {
@@ -58,8 +59,11 @@ internal sealed partial class CodeWorkshop
             var turn = await ReadAsync("thread/turns/list", new { threadId = CodexJson.Text(threads[index], "id"),
                 limit = 1, sortDirection = "desc", itemsView = "summary" }, cancellation);
             var summary = SubagentTaskSummary(tasks, CodexJson.Text(threads[index], "id"));
-            agents[index] = Subagent(threads[index], SummarizeTurn(CodexJson.Items(CodexJson.Field(turn, "data")).FirstOrDefault()).State)
-                with { Task = summary.Task, TaskState = summary.State, TaskVersion = summary.Version };
+            var latest = CodexJson.Items(CodexJson.Field(turn, "data")).FirstOrDefault();
+            var latestSummary = SummarizeTurn(latest);
+            agents[index] = Subagent(threads[index], latestSummary.State)
+                with { Task = summary.Task, TaskState = summary.State, TaskVersion = summary.Version,
+                    Turn = TurnSummary(latest), Summary = CodexJson.Clip(latestSummary.Preview, 200) };
         });
         return new { agents, nextCursor = CodexJson.Text(page, "nextCursor") is { Length: > 0 } next ? next : null };
     }

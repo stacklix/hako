@@ -75,6 +75,12 @@ internal static class Program
     {
         try
         {
+            if (args.Length == 1 && args[0] == "--workshop-stdio-fixture") { WorkshopStdioChecks.Fixture(); return 0; }
+            if (args.Length == 1 && args[0] == "--workshop-stdio-bounded") { await WorkshopStdioChecks.RunBoundedAsync(); return 0; }
+            if (args.Length == 1 && args[0] == "workshop-stdio") { await WorkshopStdioChecks.RunAsync(); return 0; }
+            if (args.Length == 1 && args[0] == "--workshop-worker-fixture") { await WorkshopWorkerChecks.FixtureAsync(); return 0; }
+            if (args.Length == 1 && args[0] == "workshop-workers") { await WorkshopWorkerChecks.RunAsync(); return 0; }
+            if (args.Length == 1 && args[0] == "workshop-worker-startup-live") { await WorkshopWorkerChecks.MeasureStartupAsync(); return 0; }
             if (args.Length == 1 && args[0] == "workshop-context") { await WorkshopContextChecks.RunAsync(); return 0; }
             if (args.Length == 1 && args[0] == "resource-history") { await ResourceHistoryChecks.RunAsync(); return 0; }
             if (args.Length == 1 && args[0] == "cli") { await CliChecks.RunAsync(); return 0; }
@@ -91,6 +97,7 @@ internal static class Program
             if (args.Length == 1 && args[0] == "workshop-cloud") { WorkshopConnectionLogChecks.Run(); await WorkshopCloudChecks.RunAsync(); return 0; }
             if (args.Length == 1 && args[0] == "services") { await ServiceMonitorChecks.RunAsync(); return 0; }
             if (args.Length == 1 && args[0] == "android") { await AndroidChecks.RunAsync(); return 0; }
+            if (args.Length == 3 && args[0] == "android-status-live") { await AndroidChecks.ReadStatusLiveAsync(args[1], args[2]); return 0; }
             if (args.Length == 3 && args[0] == "android-live") { await AndroidChecks.ReadLiveAsync(args[1], args[2]); return 0; }
             if (args.Length == 3 && args[0] == "android-preview-live") { await AndroidChecks.PreviewLiveAsync(args[1], args[2]); return 0; }
             if (args.Length == 3 && args[0] == "android-video-live") { await AndroidVideoChecks.LiveAsync(args[1], args[2]); return 0; }

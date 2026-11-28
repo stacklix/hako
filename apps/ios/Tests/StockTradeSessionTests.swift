@@ -45,6 +45,7 @@ private final class StockTradeTestSecrets: SecretStorage {
     var failComplete = false
     var switchDuringStart = false
     var mismatchPage = false
+    var missingPublishedSnapshot = false
     var challenge = ""
     var fingerprint = ""
     var expireAccessOnce = false
@@ -107,6 +108,7 @@ private final class StockTradeTestSecrets: SecretStorage {
                 object = ["items": [], "nextCursor": NSNull(), "workerOnline": true]
             } else if endpoint == "auth/session" { object = method == "DELETE" ? ["ok":true] : ["user":identity] }
             else if endpoint == "runs/latest" {
+                if missingPublishedSnapshot { throw StockTradeFailure.api(status: 404, code: "snapshot_unavailable", requestID: "r", retryable: false) }
                 object = meta().merging(["runId":"run-one","status":"complete","candidateCount":1,"reviewCount":1,"recommendationCount":1,"thresholds":[:]]) { _, new in new }
             } else {
                 precondition(endpoint == "runs/run-one/recommendations")
@@ -128,9 +130,11 @@ private final class StockTradeTestSecrets: SecretStorage {
         let api = StockTradeTestBackend(auth)
         let store = StockTradeStore(defaults:defaults,secrets:vault,authentication:auth,clientFactory:{ _ in api })
         try store.configure(.init(origin:"https://trade.test",clientID:"stocktrade"))
+        precondition(store.entryState == .loading, "The view must wait for its initial authorization attempt")
         auth.requireConsent = true
         await store.login()
         precondition(store.session == nil && store.consent != nil && api.completes == 0)
+        precondition(store.entryState == .login, "A settled consent request must not leave startup loading active")
         precondition(auth.authorizeBodies == [false], "Consent must not be silently upgraded")
         await store.activate()
         precondition(api.starts == 1, "An existing consent sheet must not be replaced by another activation")
@@ -171,8 +175,26 @@ private final class StockTradeTestSecrets: SecretStorage {
         precondition(auth.authorizeBodies.count == approvals)
         auth.authenticated = true
         let restored = StockTradeStore(defaults:defaults,secrets:vault,authentication:auth,clientFactory:{ _ in api })
+        precondition(restored.entryState == .loading, "Stored credentials are not yet read on the first view frame")
         await restored.activate()
+        precondition(restored.entryState == .content, "Restoration must settle directly on its loaded result")
         precondition(restored.session != nil && restored.favorites.count == 1 && api.starts == 1)
+        let interruptedEntry = StockTradeStore(defaults:defaults,secrets:vault,authentication:auth,clientFactory:{ _ in api })
+        let cancelledEntry = Task { @MainActor in
+            withUnsafeCurrentTask { $0?.cancel() }
+            await interruptedEntry.activate()
+        }
+        await cancelledEntry.value
+        precondition(interruptedEntry.resultsState == .loading, "An interrupted initial read is still unresolved, not a first-screening prompt")
+        await interruptedEntry.activate()
+        precondition(interruptedEntry.resultsState == .loaded, "Re-entering after cancellation must retry the normal read")
+        api.missingPublishedSnapshot = true
+        let noPublication = StockTradeStore(defaults:defaults,secrets:vault,authentication:auth,clientFactory:{ _ in api })
+        await noPublication.activate()
+        precondition(noPublication.resultsState == .missing, "Only snapshot_unavailable confirms that first screening is appropriate")
+        api.missingPublishedSnapshot = false
+        await noPublication.activate(force: true)
+        precondition(noPublication.resultsState == .loaded && api.starts == 1, "A normal retry reads published data without launching another selection or login")
         api.mode = "unavailable"
         await restored.refresh()
         precondition(restored.session != nil && restored.rows.count == 1, "503 must retain the account and previous snapshot")
@@ -184,6 +206,7 @@ private final class StockTradeTestSecrets: SecretStorage {
         api.mode = "ok"; auth.requireConsent = false
         await store.logout()
         precondition(store.session == nil)
+        precondition(store.entryState == .login, "Explicit logout must not show a startup loader")
         await store.login()
         precondition(store.session != nil)
         api.mismatchPage = true

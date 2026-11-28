@@ -24,6 +24,10 @@ internal sealed class CodexAppServer : IAsyncDisposable
     private readonly Task stderr;
     private readonly Func<string, TimeSpan> requestTimeout;
     private int sequence;
+    private int disconnected;
+    private readonly object disposalGate = new();
+    private Task? disposal;
+    internal bool IsConnected => Volatile.Read(ref disconnected) == 0;
     public event Action<JsonElement>? Event;
 
     private CodexAppServer(ProcessStartInfo start, Func<string, TimeSpan>? timeout)
@@ -41,9 +45,12 @@ internal sealed class CodexAppServer : IAsyncDisposable
         // Core identity: the standalone executable is outside the app package.
         start.Environment.Remove("CODEX_WINDOWS_REGISTERED_CORE");
         process = Process.Start(start) ?? throw new IOException("Codex 进程未能启动。");
-        reader = ReadAsync();
-        // Drain diagnostics, but never forward local credentials or full startup logs.
-        stderr = DrainAsync();
+        // Windows redirected process pipes are synchronous handles. ReadLineAsync
+        // uses blocking thread-pool work for them; resident workers can exhaust
+        // the pool and delay local RPC acceptance beyond its connection deadline.
+        reader = Task.Factory.StartNew(Read, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+        // Drain diagnostics on a dedicated thread too; never forward credentials.
+        stderr = Task.Factory.StartNew(Drain, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
     }
 
     public static async Task<CodexAppServer> StartAsync(CancellationToken token, ProcessStartInfo? fixture = null, Func<string, TimeSpan>? timeout = null)
@@ -100,6 +107,7 @@ internal sealed class CodexAppServer : IAsyncDisposable
     // Startup can load a long conversation and initialize tools. It runs in the
     // durable worker, so it must not share the short interactive-read deadline.
     internal static TimeSpan RequestTimeout(string method) => TimeSpan.FromSeconds(
+        method == "thread/sample" ? 20 :
         method is "initialize" or "thread/start" or "thread/fork" or "thread/resume" or "turn/start" or "thread/compact/start" ? 60 : 8);
 
     public async Task<JsonElement> RequestAsync(string method, object parameters, CancellationToken token)
@@ -131,12 +139,12 @@ internal sealed class CodexAppServer : IAsyncDisposable
         finally { writing.Release(); }
     }
 
-    private async Task ReadAsync()
+    private void Read()
     {
         Exception failure = new IOException("Codex 连接已关闭，请查看会话历史确认任务状态。");
         try
         {
-            while (await process.StandardOutput.ReadLineAsync() is { } line)
+            while (process.StandardOutput.ReadLine() is { } line)
             {
                 using var document = JsonDocument.Parse(line);
                 var message = document.RootElement;
@@ -150,18 +158,24 @@ internal sealed class CodexAppServer : IAsyncDisposable
         catch (Exception e) { failure = e; }
         finally
         {
+            Interlocked.Exchange(ref disconnected, 1);
             foreach (var request in pending.Values) request.TrySetException(failure);
             Event?.Invoke(JsonSerializer.SerializeToElement(new { method = "hako/connectionClosed" }));
         }
     }
 
-    private async Task DrainAsync()
+    private void Drain()
     {
-        try { while (await process.StandardError.ReadLineAsync() is not null) { } }
+        try { while (process.StandardError.ReadLine() is not null) { } }
         catch (IOException) { }
     }
 
-    public async ValueTask DisposeAsync()
+    public ValueTask DisposeAsync()
+    {
+        lock (disposalGate) return new(disposal ??= CloseAsync());
+    }
+
+    private async Task CloseAsync()
     {
         try
         {
@@ -171,6 +185,7 @@ internal sealed class CodexAppServer : IAsyncDisposable
         catch (Exception e) when (e is TimeoutException or IOException or InvalidOperationException)
         {
             if (!process.HasExited) process.Kill(entireProcessTree: true);
+            await process.WaitForExitAsync();
         }
         try { await Task.WhenAll(reader, stderr).WaitAsync(TimeSpan.FromSeconds(2)); }
         catch (TimeoutException) { }

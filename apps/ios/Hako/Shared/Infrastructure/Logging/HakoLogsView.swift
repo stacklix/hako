@@ -106,8 +106,9 @@ struct HakoLogsView: View {
     private func reload() { let snapshot = HakoLogStore.shared.snapshot(); entries = snapshot.entries; storageIssue = snapshot.issue }
 }
 
-private struct HakoLogDetailView: View {
+struct HakoLogDetailView: View {
     let entry: HakoLogEntry
+    var title = "日志详情"
     @State private var copied = false
     var body: some View {
         List {
@@ -134,7 +135,7 @@ private struct HakoLogDetailView: View {
                 } header: { Text("详情") }
             }
         }
-        .navigationTitle("日志详情")
+        .navigationTitle(title)
         .toolbar { ShareLink(item: entry.text) { Image(systemName: "square.and.arrow.up") }.accessibilityLabel("分享此条日志") }
         .privacySensitive()
     }

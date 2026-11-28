@@ -1,22 +1,18 @@
 import SwiftUI
 import Charts
 
-struct CodexUsageChart: View {
-    let usage: ConsoleCodexUsage
+struct WorkshopUsageChart: View {
+    let usage: WorkshopUsageSnapshot
     @State private var selectedDate: String?
     private let ticks = [0.0, 0.25, 0.5, 0.75, 1.0]
-    private var callsMaximum: Double { ConsoleCodexChartScale.maximum(for: usage.days.map(\.requestCount).max() ?? 0) }
-    private var tokensMaximum: Double { ConsoleCodexChartScale.maximum(for: usage.days.map(\.totalTokens).max() ?? 0) }
-    private var displayedDay: ConsoleCodexUsageDay? { usage.days.first { $0.date == selectedDate } ?? usage.days.last }
+    private var callsMaximum: Double { axisMaximum(for: usage.days.map(\.requestCount).max() ?? 0) }
+    private var tokensMaximum: Double { axisMaximum(for: usage.days.map(\.totalTokens).max() ?? 0) }
+    private var displayedDay: WorkshopUsageDay? { usage.days.first { $0.date == selectedDate } ?? usage.days.last }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            HStack(spacing: 24) {
-                summary("7 天调用数", value: usage.countsUserMessages ? (usage.totalCalls ?? 0).formatted() : "—", color: .blue)
-                summary("7 天 Token", value: compact(Double(usage.totalTokens ?? 0)), color: .orange)
-            }
             HStack {
-                legend("调用数 · 左轴", color: .blue)
+                legend("请求次数 · 左轴", color: .blue)
                 Spacer()
                 legend("Token · 右轴", color: .orange)
             }
@@ -29,7 +25,7 @@ struct CodexUsageChart: View {
                             VStack(alignment: .leading, spacing: 4) {
                                 Text(day.date).foregroundStyle(.secondary)
                                 if usage.countsUserMessages {
-                                    Text("\(day.requestCount.formatted()) 次调用").foregroundStyle(.blue)
+                                    Text("\(day.requestCount.formatted()) 次请求").foregroundStyle(.blue)
                                 }
                                 Text("\(day.totalTokens.formatted()) token").foregroundStyle(.orange)
                             }
@@ -46,10 +42,10 @@ struct CodexUsageChart: View {
                 ForEach(usage.days) { day in
                     if usage.countsUserMessages {
                         BarMark(x: .value("日期", day.date), y: .value("比例", Double(day.requestCount) / callsMaximum), width: .ratio(0.75))
-                            .position(by: .value("指标", "调用数"))
+                            .position(by: .value("指标", "请求次数"))
                             .foregroundStyle(.blue)
                             .opacity(selectedDate == nil || selectedDate == day.date ? 1 : 0.4)
-                            .accessibilityLabel("\(day.date) 调用数")
+                            .accessibilityLabel("\(day.date) 请求次数")
                             .accessibilityValue("\(day.requestCount.formatted()) 次")
                     }
                     BarMark(x: .value("日期", day.date), y: .value("比例", Double(day.totalTokens) / tokensMaximum), width: .ratio(0.75))
@@ -108,19 +104,15 @@ struct CodexUsageChart: View {
                     Text(day.date).foregroundStyle(.secondary)
                     ViewThatFits(in: .horizontal) {
                         HStack(spacing: 12) {
-                            Text(usage.countsUserMessages ? "\(day.requestCount.formatted()) 次调用" : "调用数待更新").foregroundStyle(.blue)
+                            Text(usage.countsUserMessages ? "\(day.requestCount.formatted()) 次请求" : "请求次数未知").foregroundStyle(.blue)
                             Text("\(day.totalTokens.formatted()) token").foregroundStyle(.orange)
                         }
                         VStack(alignment: .leading, spacing: 5) {
-                            Text(usage.countsUserMessages ? "\(day.requestCount.formatted()) 次调用" : "调用数待更新").foregroundStyle(.blue)
+                            Text(usage.countsUserMessages ? "\(day.requestCount.formatted()) 次请求" : "请求次数未知").foregroundStyle(.blue)
                             Text("\(day.totalTokens.formatted()) token").foregroundStyle(.orange)
                         }
                     }
                 }.font(.caption).monospacedDigit().accessibilityElement(children: .combine)
-            }
-            if !usage.countsUserMessages {
-                Text("请更新 Agent 后查看用户调用数；旧版模型请求次数不会显示为调用数。")
-                    .font(.footnote).foregroundStyle(.orange)
             }
             Text("左右轴使用独立刻度。点击柱子查看当天完整数字。")
                 .font(.caption2).foregroundStyle(.secondary)
@@ -130,17 +122,19 @@ struct CodexUsageChart: View {
             if let selectedDate, !dates.contains(selectedDate) { self.selectedDate = nil }
         }
     }
-    private func summary(_ title: String, value: String, color: Color) -> some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Text(title).font(.caption).foregroundStyle(.secondary)
-            Text(value).font(.title2.weight(.semibold)).foregroundStyle(color).monospacedDigit()
-        }.frame(maxWidth: .infinity, alignment: .leading)
-    }
     private func legend(_ title: String, color: Color) -> some View {
         HStack(spacing: 5) {
             Circle().fill(color).frame(width: 7, height: 7)
             Text(title).font(.caption).foregroundStyle(.secondary)
         }
+    }
+    private func axisMaximum(for value: Int64) -> Double {
+        guard value > 0 else { return 4 }
+        let rawStep = Double(value) / 4
+        let magnitude = pow(10, floor(log10(rawStep)))
+        let fraction = rawStep / magnitude
+        let factor = [1.0, 2.0, 2.5, 5.0, 10.0].first { $0 >= fraction } ?? 10
+        return 4 * max(1, ceil(factor * magnitude))
     }
     private func compact(_ value: Double) -> String { value.formatted(.number.notation(.compactName).precision(.fractionLength(0...1))) }
     private func shortDate(_ date: String) -> String { String(date.suffix(5)).replacingOccurrences(of: "-", with: "/") }

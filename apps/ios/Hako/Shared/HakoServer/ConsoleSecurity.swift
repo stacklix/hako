@@ -28,7 +28,7 @@ enum ConsoleKeychain {
     }
 }
 
-struct ConsoleIdentity: Codable {
+struct ConsoleIdentity: Codable, Sendable {
     let deviceId: String
     let keyRepresentation: Data
     var resetGeneration: String? = nil

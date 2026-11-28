@@ -1,6 +1,23 @@
 import SwiftUI
 import UIKit
 
+struct CryptoChainTrendView: View {
+    @ObservedObject var store: CryptoStore
+    @State private var days=30
+    private var records: [CryptoRecord] {
+        let now=Date.now, calendar=CryptoDay.calendar
+        let start=days == 0 ? .distantPast : calendar.date(byAdding:.day,value:1-days,to:calendar.startOfDay(for:now))!
+        return CryptoChainHistory.records(store.portfolio,
+            snapshots:store.wallets.map { store.walletSnapshot($0) },hasErrors:!store.walletErrors.isEmpty,
+            from:start,through:now,now:now)
+    }
+    var body: some View {
+        CryptoTrend(title:"资产趋势",records:records,keys:["chain"],names:["链上资产"],units:["USDT"],
+                    rangeSelection:$days,selectsLatest:true,
+                    note:"按 USDT 汇总已采集的每日链上资产，缺失日期不补值。当天记录为最新估值。")
+    }
+}
+
 struct CryptoChainAssetsView: View {
     private enum Dimension: String, CaseIterable { case coin = "按币种", wallet = "按钱包" }
     @ObservedObject var store: CryptoStore

@@ -19,6 +19,18 @@ import UIKit
         store.setConnectionForeground(UIApplication.shared.applicationState != .background)
         context = store.scope
         registerCatalog()
+        store.sessionArchived.sink { [weak self] notice in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                let matches = self.conversations.filter { $0.value.conversation.scope == notice.scope &&
+                    $0.value.conversation.agent.id == notice.agentID && $0.value.conversation.threadId == notice.threadID }
+                for (id, retained) in matches {
+                    self.synchronization.remove(id)
+                    retained.conversation.discardCacheAfterArchive()
+                    self.conversations[id] = nil
+                }
+            }
+        }.store(in: &subscriptions)
         synchronization.setForeground(UIApplication.shared.applicationState != .background)
         store.authentication.changes.sink { [weak self] _ in
             Task { @MainActor [weak self] in self?.resetContext() }
@@ -44,9 +56,11 @@ import UIKit
         }.store(in: &subscriptions)
         NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification).sink { [weak self] _ in
             Task { @MainActor [weak self] in
-                self?.store.setConnectionForeground(true)
-                await self?.store.prepareNetwork()
-                self?.synchronization.setForeground(true)
+                guard let self else { return }
+                for id in self.visibility.foreground { self.conversations[id]?.conversation.prepareForDisplay() }
+                self.store.setConnectionForeground(true)
+                await self.store.prepareNetwork()
+                self.synchronization.setForeground(true)
             }
         }.store(in: &subscriptions)
     }

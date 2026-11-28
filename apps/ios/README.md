@@ -227,3 +227,57 @@ swiftc Hako/Features/DeviceManagement/DeviceCardPresentation.swift Tests/DeviceC
 ## GitHub Actions 自动打包与安装页
 
 仅当默认分支推送包含 `apps/ios/` 目录下的文件变化时，自动导出签名 IPA，发布 GitHub Pages 安装页；也可手动运行。首次需配置证书、描述文件 Secrets 和 Pages，详见 [自动打包与网页安装](../../docs/ios/ci-install.md)。
+
+## 金融 API Token
+
+主应用「设置 → 金融 API Token」统一管理投资记账和加密资产的凭据，显示字段的稳定 key、配置状态和使用子应用。A 股选股通过 Hako 登录，无手填 API Token；其声明的凭据列表为空。非金融模块的配置与快捷指令不受此功能影响。
+
+金融子应用在自己的 `HakoApplicationModule.credentials` 中声明凭据名称、字段 key、字段名称与验证器 ID，不再提供凭据 JSON 文件。例如：
+
+```swift
+credentials: [
+    .init(title: "Tushare Pro",
+          fields: [.init(key: "tushare.token", title: "API Token")],
+          validatorID: TushareCredentialValidator.identifier)
+]
+```
+
+主应用从统一模块清单收集声明，在创建子应用页面前同步配置 `HakoTokens`。声明只包含元数据，禁止放入真实 Token 值。声明合并与合法性检查不访问钥匙串；调用原有读取或保存接口时才访问存储。
+
+子应用通过 `try HakoTokens.read("tushare.token")` 读取。相同的 key 共用凭据，并合并子应用关联；Twelve Data 的 `twelve-data.api-key` 已由投资记账和加密资产共同声明。Key 只能包含字母、数字、点、下划线和连字符，首字符为字母；同一凭据组的完整 key 集合必须一致，不允许同一个 key 同时属于不同分组。HTX 和 Binance 的 API Key、Secret Key 分别归入同一组，一起保存或清空，禁止只更新一半。
+
+所有凭据值保存在主应用的系统钥匙串命名空间 `me.stackli.hako.financial-tokens`，同一条记录同时保存整组值、字段名、子应用 ID 和显示名称；按现有 iCloud 钥匙串策略同步。原子保存以整组记录为单位，子应用仅显示配置状态，密钥的编辑、清除和验证统一放在主应用。投资接口详情保留调用统计。
+
+金融旧凭据导入已在 0.9.44 完成真机确认，后续版本已移除旧存储读取、迁移映射和前台迁移触发。主应用只读取已持久化的钥匙串记录；模块声明、key、凭据分组和子应用关联继续使用。由 JSON 改为 Swift 声明不改变钥匙串命名空间、分组 ID、字段、关联顺序或 v1 记录格式，无需迁移或重新录入。已有记录的存储命名空间及 v1 数据格式保持不变，历史来源字段仅作为存储元数据保留。清空仍会保存空记录及关联，不删除用户的旧存储数据。
+
+## 子应用统一注册与密钥验证
+
+`HakoApplications.modules` 是唯一的子应用入口清单。每个子应用在自己的 `*ApplicationModule.swift` 中提供 `HakoApplicationModule`，集中声明分类、说明、图标、页面工厂，以及快捷指令、通知、固定页面、备份范围、主应用设置和密钥验证器的注册回调。HTTP 代理和通知管理作为没有首页页面的入口注册主应用设置。页面和业务回调按需执行，注册入口本身不读取数据库、不发起网络请求。
+
+新增子应用时添加稳定的 `Application` 导航标识及一条模块入口；已有子应用新增能力只修改自己的入口及实现，不再向主应用增加按能力分派的 `switch`。原有导航标识、分类持久化 key 和默认顺序保持不变。注册清单会检查重复或遗漏的页面入口。
+
+金融子应用模块的每个凭据组必须声明 `validatorID`，例如 `TushareCredentialValidator.identifier`。同名 key 的共享声明必须归属于同一完整凭据组、使用同一个验证器 ID。子应用实现 `HakoCredentialValidator`，声明标识、完整 key 集合和异步验证方法，再从自己的模块入口调用 `registration.credentialValidators.register(...)`。主应用只把该组的已保存凭据传给对应回调，不把其他密钥传入；HTX 与 Binance 始终整组验证。
+
+主应用的密钥编辑页保存后保留当前页面，提供“验证已保存的凭据”。有未保存修改时禁用验证；验证可取消，离开页面会取消当前任务。结果区分验证通过、鉴权失败、权限不足、限流和暂时无法确认。验证开始及结束都会核对已保存值，期间凭据变更会丢弃旧结果。结果和时间仅在当前设置会话展示；修改密钥后清除旧结果。凭据组的钥匙串命名空间和 v1 存储格式不变，验证器 ID 来自子应用模块，不复制进凭据值。
+
+验证只调用只读接口，不写入业务数据：Tushare 读取前一天交易日历；Twelve Data 查询密钥用量；HTX 使用签名读取账户列表；Binance 使用签名查询 API Key 权限；Moralis 对公共零地址读取 EVM 代币列表。响应正文不记入验证日志，错误结果隐藏原始密钥；网络失败不会被当成密钥无效。
+
+TRONSCAN 的公开区块接口可能对无效密钥仍返回数据，因此额外以同格式的变造密钥做一次只读对照。只有当前密钥成功、对照明确遭到鉴权拒绝时才标记通过；两者均成功或对照无法完成时，显示“暂未验证通过”，不把可访问误报为鉴权有效。
+
+接口依据：[HTX 只读账户接口](https://huobiapi.github.io/docs/spot/v1/en/)、[Binance API Key 权限](https://developers.binance.com/en/docs/catalog/core-trading-wallet/api/rest-api/account)、[TRONSCAN API Key 限制说明](https://docs.tronscan.org/en/api/api-keys)、[Moralis API 鉴权](https://moralis.readme.io/reference/introduction)。单项检测通过仅代表该检测接口的权限和鉴权正常，不代表服务商所有接口均可使用。
+
+## 子应用图标
+
+13 个首页子应用在自己的 `HakoApplicationModule` 入口声明 `icon: .asset("InvestmentIcon")`，无需图标 JSON 或 `metadataID`。图标 SVG 源文件保存在各自 `<Feature>Assets.xcassets/<Asset>.imageset/`。修改图形后运行 `python scripts/render-application-icons.py --renderer rsvg-convert`，将透明 PNG 更新到子应用的 `Icons/<Asset>Template@3x.png` 并一同提交。共享渲染器直接读取 PNG 文件，避免资源目录编译产生的不透明模板遮罩；不再从 `Assets.car` 加载这些首页图标。
+
+图标统一采用 32×32 画布、2 单位线宽、圆端点和圆连接，不包含背景。主应用统一按模板渲染，继承动态前景色，适配浅色和深色模式。
+
+PNG 使用 96×96 像素的 3x 透明底图，包含源 SVG 的 SHA-256。验证检查图形覆盖率、透明像素、边缘和源文件指纹，避免只检查 SVG 结构却未发现运行时图片是实心方块。打包后应核对 13 个 PNG 已作为独立资源包含在 App 根目录。
+
+首页、子应用排序、应用通知及固定页面的默认应用图标统一使用 `HakoApplicationIcon`。青龙没有独立加载分支；未声明或资源缺失时显示统一占位图标。子应用自行提供的固定页面专用图标仍由原回调呈现。
+
+## 卡顿与崩溃诊断
+
+设置中的「卡顿诊断」收集三类异常：前台主线程响应超过 2 秒、弹层切换就绪或动画回调超过 10 秒、MetricKit 下发的系统卡顿及崩溃报告。主线程检测由独立后台队列发起单个探测，阻塞期间先落盘，恢复后更新同一条记录；离开活跃前台后停止计时，不将锁屏或后台停留算作卡顿。主队列探测不采集调用栈，不将其工作线程的栈冒充为主线程栈；系统报告保留系统提供的调用栈和报告区间，接收时间不冒充故障发生时间。
+
+诊断报告与普通滚动运行日志分开保存于应用支持目录 `HakoLogs/Diagnostics`，按最近 100 条及报告总计 8 MiB 淘汰较早记录，单条正文最多 512 KiB；普通日志清理不会删除诊断。系统报告按内容指纹持久化去重。操作轨迹另保留最近 100 条，记录前后台、快捷访问、通知跳转、弹层开始/完成/超时和未保存保护状态，只包含控制器类型及状态，不记录会话正文、页面标题、通知正文、URL 或凭据值。轨迹在重启后可查看；系统报告关联的当前进程轨迹不能证明是同一次故障。诊断页支持复制、分享和独立清理；没有记录不保证没有问题，系统终止报告仍取决于 iOS 是否提供。

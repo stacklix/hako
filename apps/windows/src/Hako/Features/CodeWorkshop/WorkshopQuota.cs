@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using System.Text.Json;
 using System.Threading;
@@ -8,8 +9,9 @@ using System.Threading.Tasks;
 namespace Hako.Platform;
 
 internal sealed record WorkshopQuotaWindow(double UsedPercent, int? WindowDurationMins, long? ResetsAt);
+internal sealed record WorkshopQuotaCredits(bool HasCredits, bool Unlimited, string? Balance);
 internal sealed record WorkshopQuotaBucket(string Id, string Name, string Model,
-    WorkshopQuotaWindow? Primary, WorkshopQuotaWindow? Secondary);
+    WorkshopQuotaWindow? Primary, WorkshopQuotaWindow? Secondary, WorkshopQuotaCredits? Credits = null);
 
 internal sealed partial class CodeWorkshop
 {
@@ -17,7 +19,7 @@ internal sealed partial class CodeWorkshop
     {
         CodexJson.Keys(parameters);
         var result = await ReadAsync("account/rateLimits/read", new { }, token);
-        // Return quota metadata only, never account IDs, auth tokens or credit details.
+        // Return only displayable quota/credit metadata, never account IDs or auth tokens.
         return new { buckets = QuotaBuckets(result), checkedAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds() };
     }
 
@@ -36,10 +38,23 @@ internal sealed partial class CodeWorkshop
         {
             var primary = Window(CodexJson.Field(value, "primary"));
             var secondary = Window(CodexJson.Field(value, "secondary"));
-            if (primary is null && secondary is null) return;
+            var credits = Credits(CodexJson.Field(value, "credits"));
+            if (primary is null && secondary is null && credits is null) return;
             buckets.Add(new(CodexJson.Clip(id, 100), CodexJson.Clip(CodexJson.Text(value, "limitName"), 100),
-                CodexJson.Clip(CodexJson.Text(value, "normalModelSlug"), 100), primary, secondary));
+                CodexJson.Clip(CodexJson.Text(value, "normalModelSlug"), 100), primary, secondary, credits));
         }
+    }
+
+    private static WorkshopQuotaCredits? Credits(JsonElement value)
+    {
+        var available = CodexJson.Field(value, "hasCredits");
+        var unlimited = CodexJson.Field(value, "unlimited");
+        if (available.ValueKind is not (JsonValueKind.True or JsonValueKind.False) ||
+            unlimited.ValueKind is not (JsonValueKind.True or JsonValueKind.False)) return null;
+        var balance = CodexJson.Text(value, "balance").Trim();
+        var valid = balance.Length is > 0 and <= 100 &&
+            decimal.TryParse(balance, NumberStyles.AllowDecimalPoint, CultureInfo.InvariantCulture, out var amount) && amount >= 0;
+        return new(available.GetBoolean(), unlimited.GetBoolean(), valid ? balance : null);
     }
 
     private static WorkshopQuotaWindow? Window(JsonElement value)

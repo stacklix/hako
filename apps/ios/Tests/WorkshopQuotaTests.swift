@@ -17,6 +17,21 @@ import Foundation
         precondition(WorkshopQuotaWindow(usedPercent:1,windowDurationMins:10080,resetsAt:nil).periodLabel(primary:false) == "1周")
         let data=Data(#"{"checkedAt":1800000000,"buckets":[{"id":"codex","name":"","model":"","primary":{"usedPercent":27.5,"windowDurationMins":300,"resetsAt":1800003661},"secondary":null},{"id":"other","name":"Other model","model":"other-model","primary":null,"secondary":{"usedPercent":1,"windowDurationMins":10080,"resetsAt":null}}]}"#.utf8)
         let snapshot=try JSONDecoder().decode(WorkshopQuotaSnapshot.self,from:data)
+        precondition(snapshot.credits == nil, "An absent balance must not be inferred from remaining percent")
+        let creditData = Data(#"{"checkedAt":1800000000,"buckets":[{"id":"codex","name":"","model":"","primary":null,"secondary":null,"credits":{"hasCredits":true,"unlimited":false,"balance":"123.45"}}]}"#.utf8)
+        let creditsSnapshot = try JSONDecoder().decode(WorkshopQuotaSnapshot.self, from: creditData)
+        precondition(creditsSnapshot.credits?.displayBalance == "123")
+        let storedCredits = try JSONDecoder().decode(WorkshopQuotaSnapshot.self, from: JSONEncoder().encode(creditsSnapshot))
+        precondition(storedCredits.credits?.balance == "123.45", "Cached quota must retain the reported credit balance")
+        precondition(storedCredits.credits?.displayBalance == "123")
+        precondition(WorkshopQuotaCredits(hasCredits: true, unlimited: false, balance: "60801.7583680000").displayBalance == "60801")
+        precondition(WorkshopQuotaCredits(hasCredits: true, unlimited: false, balance: "1.999").displayBalance == "1", "Display discards fractions without rounding up the remaining credits")
+        precondition(WorkshopQuotaCredits(hasCredits: true, unlimited: true, balance: nil).displayBalance == "不限量")
+        precondition(WorkshopQuotaCredits(hasCredits: false, unlimited: false, balance: "0").displayBalance == "0")
+        precondition(WorkshopQuotaCredits(hasCredits: false, unlimited: false, balance: nil).displayBalance == "未知")
+        for invalidBalance in ["-1", "NaN", "", "1e999", "private-token"] {
+            precondition(WorkshopQuotaCredits(hasCredits: true, unlimited: false, balance: invalidBalance).displayBalance == "未知")
+        }
         precondition(snapshot.remainingFraction(at: now) == 0.725, "Section fill uses the least remaining reported quota, not an average")
         precondition(snapshot.remainingFraction(at: now.addingTimeInterval(3661)) == nil,
             "An elapsed window must not display an apparently healthy section fill from other windows")
@@ -85,7 +100,46 @@ import Foundation
         let staleResult = await stale.value
         precondition(staleResult == nil && memory.cached(at: computerA) == nil,
             "Account changes must fence reads already in flight and clear old memory")
-        print("Workshop quota: decoding, countdown, invalid values, persisted cache and strict one-hour expiration passed")
+        let week = WorkshopQuotaWindow(usedPercent: 68, windowDurationMins: 10080,
+            resetsAt: now.timeIntervalSince1970 + 107 * 3600)
+        let weekly = WorkshopQuotaSnapshot(buckets: [.init(id: "codex", name: "", model: "", primary: window, secondary: week)], checkedAt: 0)
+        precondition(weekly.weeklyWindow?.remaining(at: now) == 32)
+        precondition(abs(week.remainingTimeFraction(at: now)! - 107.0 / 168) < 0.000001)
+        precondition(week.remainingTimeFraction(at: now.addingTimeInterval(108 * 3600)) == 0)
+        precondition(weekly.weeklyWindow?.remaining(at: now.addingTimeInterval(108 * 3600)) == nil,
+            "Passing reset time does not establish recovered token capacity")
+        precondition(unknown.remainingTimeFraction(at: now) == nil)
+        precondition(WorkshopQuotaWindow(usedPercent: 0, windowDurationMins: 10080, resetsAt: .infinity).resetDate == nil)
+        precondition(WorkshopQuotaSnapshot(buckets: [.init(id: "codex", name: "", model: "", primary: window, secondary: nil)], checkedAt: 0).weeklyWindow == nil,
+            "A five-hour quota must not be drawn as a weekly countdown")
+        let anotherWeek = WorkshopQuotaWindow(usedPercent: 5, windowDurationMins: 10080, resetsAt: week.resetsAt)
+        let multiple = WorkshopQuotaSnapshot(buckets: [.init(id: "model", name: "", model: "other", primary: anotherWeek, secondary: nil)] + weekly.buckets, checkedAt: 0)
+        precondition(multiple.weeklyWindow?.usedPercent == 68, "The Codex account window takes priority over a model-specific bucket")
+        let days: [[String: Any]] = (20...26).map { day in
+            ["date": "2026-11-\(day)", "requestCount": 2, "inputTokens": 80, "cachedInputTokens": 60,
+             "outputTokens": 20, "reasoningOutputTokens": 5, "totalTokens": 100, "breakdownAvailable": true]
+        }
+        func usage(_ values: [[String: Any]]) throws -> WorkshopUsageSnapshot {
+            let payload: [String: Any] = ["available": true, "collectedAt": "2026-11-26T12:00:00Z",
+                "timeZone": "China Standard Time", "days": values, "warnings": [], "requestCountKind": "user_messages"]
+            return try JSONDecoder().decode(WorkshopUsageSnapshot.self, from: JSONSerialization.data(withJSONObject: payload))
+        }
+        let statistics = try usage(days)
+        precondition(statistics.isValid && statistics.totalTokens == 700 && statistics.totalRequests == 14,
+            "Cache input and reasoning output must not be counted twice")
+        precondition(statistics.countsUserMessages && statistics.days.last?.shortDate == "11.26")
+        let duplicateDays = try usage(days + [days[0]])
+        precondition(!duplicateDays.isValid, "Duplicate days must not inflate totals")
+        var invalidDays = days
+        invalidDays[0]["requestCount"] = -1
+        let negativeCounts = try usage(invalidDays)
+        precondition(!negativeCounts.isValid)
+        invalidDays = days
+        invalidDays[0]["totalTokens"] = Int64.max
+        invalidDays[0]["breakdownAvailable"] = false
+        let overflowing = try usage(invalidDays)
+        precondition(!overflowing.isValid, "Overflowing totals cannot appear as a healthy usage summary")
+        print("Workshop quota: weekly rings, reset boundaries, real daily totals, invalid data and isolated cache passed")
     }
 }
 

@@ -13,6 +13,7 @@ struct InvestmentPerformanceChart: View {
         let accountID: UUID?
         let start: Date
         let today: Date
+        let range: InvestmentHistoryRange
     }
     private struct Loaded { let request: Request; let history: InvestmentPerformanceHistory }
     private struct BenchmarkRequest: Equatable {
@@ -32,6 +33,7 @@ struct InvestmentPerformanceChart: View {
     let book: InvestmentBook
     let bookVersion: UUID
     let accountID: UUID?
+    let onLoadingChange: (Bool) -> Void
     @State private var metric = Metric.value
     @State private var range = InvestmentHistoryRange.month
     @State private var showsRanges = false
@@ -44,16 +46,18 @@ struct InvestmentPerformanceChart: View {
     @State private var chartDay: Date?
     @State private var loaded: Loaded?
 
-    init(book: InvestmentBook, bookVersion: UUID, accountID: UUID? = nil) {
+    init(book: InvestmentBook, bookVersion: UUID, accountID: UUID? = nil, onLoadingChange: @escaping (Bool) -> Void = { _ in }) {
         self.book = book; self.bookVersion = bookVersion; self.accountID = accountID
+        self.onLoadingChange = onLoadingChange
     }
 
     var body: some View {
         let today = InvestmentBook.day()
         let first = (accountID.flatMap { book.account($0)?.earliest } ?? book.earliest) ?? today
         let start = max(first, range.start(through: today, firstEntry: first))
-        let request = Request(version: bookVersion, accountID: accountID, start: start, today: today)
-        let history = loaded?.request == request ? loaded?.history : nil
+        let request = Request(version: bookVersion, accountID: accountID, start: start, today: today, range: range)
+        // Keep the existing curve visible while refreshed snapshots are being calculated.
+        let history = loaded?.request.accountID == accountID && loaded?.request.range == range ? loaded?.history : nil
         let points = chartPoints(history?.samples ?? [])
         let selected = chartDay.flatMap { day in points.min { abs($0.day.timeIntervalSince(day)) < abs($1.day.timeIntervalSince(day)) } } ?? points.last
         let reference = benchmark.returns(quotes: benchmarkQuotes, samples: history?.samples ?? [])
@@ -72,10 +76,10 @@ struct InvestmentPerformanceChart: View {
                 readout(selected, currency: history.currency, today: today)
                 if metric == .rate { comparisonReadout(selected, reference: reference) }
             } else if history == nil {
-                ProgressView("正在读取投资走势…").font(.caption).frame(maxWidth: .infinity, minHeight: 171)
+                Color.clear.frame(height: 200)
             } else {
                 Text(metric == .rate ? "此区间暂无完整的收益率记录。" : "此区间暂无完整估值记录。")
-                    .font(.caption).foregroundStyle(.secondary).frame(maxWidth: .infinity, minHeight: 130)
+                    .font(.caption).foregroundStyle(.secondary).frame(maxWidth: .infinity, minHeight: 200)
             }
             if metric == .rate {
                 benchmarkSelector
@@ -120,6 +124,7 @@ struct InvestmentPerformanceChart: View {
         .onChange(of: showsBenchmarks) { if showsBenchmarks { showsRanges = false } }
         .onDisappear { showsRanges = false; showsBenchmarks = false }
         .task(id: request) { await load(request) }
+        .onChange(of: loaded?.request == request, initial: true) { _, complete in onLoadingChange(!complete) }
         .task(id: metric == .rate ? benchmarkRequest : nil) { if metric == .rate { await loadBenchmark(benchmarkRequest) } }
     }
 

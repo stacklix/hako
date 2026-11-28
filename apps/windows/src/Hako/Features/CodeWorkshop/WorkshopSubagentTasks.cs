@@ -270,15 +270,28 @@ internal sealed partial class CodeWorkshop
 
     public async Task<object?> SubagentTaskReadAsync(JsonElement parameters, CancellationToken token)
     {
-        CodexJson.Keys(parameters, "threadId", "applicationId", "agentId", "cursor");
+        CodexJson.Keys(parameters, "threadId", "applicationId", "agentId", "cursor", "messageIds");
         var parent = await SubagentParentAsync(parameters, token);
         var id = CodexJson.Required(parameters, "agentId", 100);
         if (!Guid.TryParse(id, out _)) throw CodexJson.Invalid();
         var thread = await ThreadAsync(id, false, token);
         if (!IsDirectSubagent(thread, parent)) throw new WorkshopException("codex_subagent_invalid", "该子代理不属于当前会话。");
         var index = EnsureSubagentTasks(parent, [thread]);
+        var filter = CodexJson.Field(parameters, "messageIds");
+        HashSet<string>? messageIds = null;
+        if (filter.ValueKind != JsonValueKind.Undefined)
+        {
+            if (filter.ValueKind != JsonValueKind.Array || filter.GetArrayLength() is < 1 or > 32) throw CodexJson.Invalid();
+            messageIds = new();
+            foreach (var value in filter.EnumerateArray())
+            {
+                if (value.ValueKind != JsonValueKind.String || value.GetString() is not { Length: > 0 and <= 100 } message) throw CodexJson.Invalid();
+                messageIds.Add(message);
+            }
+        }
         SubagentTaskMessage[] messages;
-        lock (gate) messages = index.Messages.Where(m => m.Agent == id).OrderBy(m => index.Order[m.Id]).ToArray();
+        lock (gate) messages = index.Messages.Where(m => m.Agent == id && (messageIds is null || messageIds.Contains(m.Id)))
+            .OrderBy(m => index.Order[m.Id]).ToArray();
         var cursor = CodexJson.Text(parameters, "cursor");
         var messageIndex = 0; var offset = 0;
         if (cursor.Length > 0)

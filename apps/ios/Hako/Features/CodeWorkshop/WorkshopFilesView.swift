@@ -1,4 +1,6 @@
 import SwiftUI
+import UIKit
+import ImageIO
 
 struct WorkshopFilesView: View {
     @StateObject private var client: WorkshopFilesData
@@ -9,8 +11,8 @@ struct WorkshopFilesView: View {
     @State private var showingRecent = false
     @State private var selectedFile: WorkshopProjectFile?
 
-    init(store: WorkshopStore, agent: WorkshopAgent, application: WorkshopApplication) {
-        _client = StateObject(wrappedValue: WorkshopFilesData(store: store, agent: agent, application: application))
+    init(store: WorkshopStore, agent: WorkshopAgent, application: WorkshopApplication, threadId: String? = nil) {
+        _client = StateObject(wrappedValue: WorkshopFilesData(store: store, agent: agent, application: application, threadId: threadId))
     }
     private struct Row: Identifiable {
         let file: WorkshopProjectFile
@@ -46,7 +48,9 @@ struct WorkshopFilesView: View {
             .onChange(of: scope) { _, _ in showingRecent = false }
         }
         .sheet(item: $selectedFile, onDismiss: { Task { await client.refresh() } }) { file in
-            WorkshopProjectFileEditor(client: client, file: file)
+            if WorkshopProjectImage.supports(file.path) {
+                WorkshopLinkedFileView(store: client.store, agent: client.agent, application: client.application, file: file, threadId: client.threadId)
+            } else { WorkshopProjectFileEditor(client: client, file: file) }
         }
     }
     private var fileTabs: some View {
@@ -180,6 +184,138 @@ struct WorkshopFilesView: View {
         await client.refresh()
         for path in expanded.sorted() { await client.directory(path) }
         if searching { await client.search(query) }
+    }
+}
+
+struct WorkshopLinkedFileView: View {
+    @StateObject private var client: WorkshopFilesData
+    @StateObject private var data = WorkshopFileEditorData()
+    @StateObject private var imageData = WorkshopProjectImageData()
+    let file: WorkshopProjectFile
+
+    init(store: WorkshopStore, agent: WorkshopAgent, application: WorkshopApplication, file: WorkshopProjectFile, threadId: String? = nil) {
+        self.file = file
+        _client = StateObject(wrappedValue: WorkshopFilesData(store: store, agent: agent, application: application, threadId: threadId))
+    }
+
+    var body: some View {
+        SettingsSheet(title: file.name) {
+            VStack(alignment: .leading, spacing: 0) {
+                Text(file.path).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                    .padding(.horizontal, 16).padding(.vertical, 8)
+                Divider()
+                if WorkshopProjectImage.supports(file.path) {
+                    WorkshopProjectImageContent(data: imageData) { await imageData.load(path: file.path, client: client) }
+                } else if data.loading {
+                    ProgressView("正在读取电脑文件…").frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if data.viewable {
+                    if WorkshopMarkdownDocument.supports(file.path) { WorkshopMarkdownPreview(source: data.draft) }
+                    else { HakoCodeEditor(text: .constant(data.draft), filename: file.path, editable: false, saving: false) }
+                } else {
+                    ContentUnavailableView {
+                        Label("无法读取文件", systemImage: "doc.text")
+                    } description: {
+                        Text(data.error ?? data.reason ?? "此文件不支持文本预览。")
+                    } actions: {
+                        Button("重新读取") { Task { await data.load(client, file: file) } }
+                    }
+                }
+            }
+            .privacySensitive()
+            .task(id: file.path) {
+                if WorkshopProjectImage.supports(file.path) { await imageData.load(path: file.path, client: client) }
+                else { await data.load(client, file: file) }
+            }
+        }
+    }
+}
+
+@MainActor final class WorkshopProjectImageData: ObservableObject {
+    @Published private(set) var image: UIImage?
+    @Published private(set) var loading = true
+    @Published private(set) var error: String?
+
+    func load(path: String, client: WorkshopFilesData) async {
+        loading = true; error = nil
+        defer { loading = false }
+        do {
+            let ticket = client.store.scope
+            let bytes = try await client.store.projectImage(path: path, application: client.application, agent: client.agent, threadId: client.threadId)
+            let decoded = try await Task.detached(priority: .userInitiated) {
+                guard let source = CGImageSourceCreateWithData(bytes as CFData, nil),
+                      let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+                        kCGImageSourceCreateThumbnailFromImageAlways: true,
+                        kCGImageSourceCreateThumbnailWithTransform: true,
+                        kCGImageSourceThumbnailMaxPixelSize: 4096,
+                        kCGImageSourceShouldCacheImmediately: true] as CFDictionary) else {
+                    throw HakoError(message: "图片格式无法显示，或文件已损坏。")
+                }
+                return UIImage(cgImage: image)
+            }.value
+            try Task.checkCancellation()
+            guard ticket == client.store.scope else { throw CancellationError() }
+            image = decoded
+        } catch is CancellationError { }
+        catch { if !Task.isCancelled { self.error = error.localizedDescription } }
+    }
+}
+
+private struct WorkshopProjectImageContent: View {
+    @ObservedObject var data: WorkshopProjectImageData
+    let retry: () async -> Void
+    var body: some View {
+        Group {
+            if let image = data.image {
+                WorkshopImageZoom(image: image).accessibilityLabel("图片，可双指缩放")
+            } else if data.loading {
+                ProgressView("正在读取电脑图片…")
+            } else {
+                ContentUnavailableView {
+                    Label("无法预览图片", systemImage: "photo")
+                } description: { Text(data.error ?? "此图片无法读取。") }
+                actions: { Button("重新加载图片") { Task { await retry() } } }
+            }
+        }.frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+struct WorkshopProjectImageView: View {
+    let path: String
+    let alt: String
+    @StateObject private var client: WorkshopFilesData
+    @StateObject private var data = WorkshopProjectImageData()
+    @State private var showingPreview = false
+    @State private var retry = 0
+
+    init(path: String, alt: String, store: WorkshopStore, agent: WorkshopAgent, application: WorkshopApplication, threadId: String?) {
+        self.path = path; self.alt = alt
+        _client = StateObject(wrappedValue: WorkshopFilesData(store: store, agent: agent, application: application, threadId: threadId))
+    }
+    var body: some View {
+        Group {
+            if let image = data.image {
+                Button { showingPreview = true } label: {
+                    Image(uiImage: image).resizable().scaledToFit()
+                        .frame(maxWidth: .infinity, maxHeight: 440)
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                }.buttonStyle(.plain).accessibilityLabel(alt.isEmpty ? "查看图片" : "查看图片：" + alt)
+            } else {
+                VStack(spacing: 12) {
+                    if let error = data.error {
+                        Label(error, systemImage: "photo").font(.caption).foregroundStyle(.secondary)
+                        Button("重新加载图片") { retry += 1 }.disabled(data.loading)
+                    } else { ProgressView("正在加载图片…").font(.caption) }
+                }.padding(20).frame(maxWidth: .infinity, minHeight: 180)
+                    .background(HakoStyle.card, in: RoundedRectangle(cornerRadius: 12))
+            }
+        }
+        .privacySensitive()
+        .task(id: "\(path):\(retry)") { await data.load(path: path, client: client) }
+        .sheet(isPresented: $showingPreview) {
+            SettingsSheet(title: (path as NSString).lastPathComponent) {
+                if let image = data.image { WorkshopImageZoom(image: image).accessibilityLabel("图片，可双指缩放") }
+            }
+        }
     }
 }
 

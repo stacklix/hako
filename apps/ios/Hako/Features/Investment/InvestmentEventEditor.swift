@@ -16,6 +16,8 @@ struct InvestmentEventEditor: View {
     @State private var saving = false
     private let counterpart: (InvestmentAccount, InvestmentEvent)?
     private let originalValues: [Field: String]
+    private let originalDate: Date
+    private let originalDecreases: Bool
 
     init(store: InvestmentStore, accountID: UUID, event: InvestmentEvent, editing: InvestmentEditorDraft? = nil) {
         self.store = store
@@ -36,7 +38,6 @@ struct InvestmentEventEditor: View {
            [.stakingReward, .spotAdjustment].contains(event.kind) {
             inputs[.settlement] = text(store.book.positionBefore(event, accountID: accountID).map { $0.quantity + event.quantity })
         }
-        originalValues = inputs
         var populated = inputs
         let keys: [Field: String] = [.amount: "amount", .counterpart: "counterpart_amount", .quantity: "quantity", .price: "price",
                                     .fee: "fee", .margin: "margin", .settlement: "settled_amount"]
@@ -46,16 +47,19 @@ struct InvestmentEventEditor: View {
         if let editing, let proposed = editing.proposal.book.account(accountID)?.events.first(where: { $0.id == event.id }) {
             populated[.quantity] = text(abs(proposed.quantity))
         }
+        originalValues = populated
+        originalDate = editing?.action.text("date").flatMap(InvestmentEditorDraft.day.date(from:)) ?? event.day
+        originalDecreases = editing?.action.text("direction").map { $0 == "decrease" } ?? (event.amount < 0)
         _values = State(initialValue: populated)
-        _date = State(initialValue: editing?.action.text("date").flatMap(InvestmentEditorDraft.day.date(from:)) ?? event.day)
-        _decreases = State(initialValue: editing?.action.text("direction").map { $0 == "decrease" } ?? (event.amount < 0))
+        _date = State(initialValue: originalDate)
+        _decreases = State(initialValue: originalDecreases)
     }
 
     private var account: InvestmentAccount? { store.book.account(accountID) }
     private var asset: InvestmentAsset? { store.book.asset(event.assetID) }
     private var editsSpotBalance: Bool { editorDraft == nil && asset?.kind == .crypto && [.stakingReward, .spotAdjustment].contains(event.kind) }
     private var recordTitle: String { editsSpotBalance ? "余额调整" : (editorDraft?.proposal.book ?? store.book).eventTitle(event, accountID: accountID) }
-    private var hasChanges: Bool { date != event.day || values != originalValues || decreases != (event.amount < 0) }
+    private var hasChanges: Bool { date != originalDate || values != originalValues || decreases != originalDecreases }
 
     var body: some View {
         SettingsSheet(title: editorDraft?.action.kind == .addEvent ? "记录交易" : "修改" + recordTitle, hasChanges: hasChanges,
@@ -183,13 +187,13 @@ struct InvestmentEventEditor: View {
     private func field(_ label: String, _ key: Field) -> some View {
         InvestmentField(label, text: Binding(get: { values[key, default: ""] }, set: { values[key] = $0 }),
                         keyboard: .decimalPad, preservesPrecision: key == .quantity || (editsSpotBalance && key == .settlement),
-                        unitPrice: key == .price && asset?.kind.usesUnitPrice == true)
+                        precision: key == .price ? .price(for: asset?.kind) : .amount)
     }
 
     private func number(_ key: Field, _ label: String, allowZero: Bool = false) throws -> Decimal {
         try investmentDecimal(values[key, default: ""], label, allowZero: allowZero,
                               preservesPrecision: key == .quantity || (editsSpotBalance && key == .settlement),
-                              unitPrice: key == .price && asset?.kind.usesUnitPrice == true)
+                              precision: key == .price ? .price(for: asset?.kind) : .amount)
     }
 
     private func save() async {

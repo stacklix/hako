@@ -223,7 +223,6 @@ struct DeviceMonitorView: View {
 }
 
 struct DeviceMetricsView: View {
-    private enum CodexTab: String, CaseIterable { case sessions = "处理中会话", usage = "最近 7 天" }
     let agent: ConsoleAgent
     let order: DeviceCardOrder.Storage
     @ObservedObject private var client = DeviceMonitorClient.shared
@@ -232,9 +231,7 @@ struct DeviceMetricsView: View {
     @State private var liveContext: String?
     @State private var liveStatus: String?
     @State private var historyRefreshID = UUID()
-    @State private var codexTab: CodexTab = .sessions
     @State private var listenerTab: ConsoleListenerGroup = .user
-    @State private var showingCodexNotes = false
     private var currentAgent: ConsoleAgent { client.agents.first { $0.id == agent.id } ?? agent }
     private var connectionState: DeviceMonitorInventory.ConnectionState { client.connectionState(for: agent.id) }
     private var state: ConsoleDeviceData { client.deviceData[agent.id] ?? ConsoleDeviceData() }
@@ -401,11 +398,6 @@ struct DeviceMetricsView: View {
               entry.error == nil, let value = entry.result?.decode(ConsoleMetrics.self), value.isValid else { return nil }
         return value
     }
-    private func codexUsage(for capability: ConsoleAgentCapability) -> ConsoleCodexUsage? {
-        guard let entry = state.entries[capability.name], entry.version == capability.version,
-              entry.error == nil, let value = entry.result?.decode(ConsoleCodexUsage.self), value.isValid else { return nil }
-        return value
-    }
     private func capabilityTabTitle(_ capability: ConsoleAgentCapability) -> String {
         switch (capability.name, capability.version) {
         case (AndroidDeviceCommand.status, 1): return "状态"
@@ -419,7 +411,6 @@ struct DeviceMetricsView: View {
         case (AndroidDeviceCommand.operation, 1): return "操作结果"
         case ("query.system.metrics", 1): return "系统"
         case (DeviceProcessCommand.status, 1): return "进程"
-        case ("query.codex.usage", 1): return "Codex"
         case ("query.network.listeners", 1): return "端口"
         case (DeviceServiceCommand.status, 1): return "服务"
         case (DeviceGitCommand.list, 1): return "Git"
@@ -461,7 +452,6 @@ struct DeviceMetricsView: View {
     }
     @ViewBuilder private func capabilityContent(_ capability: ConsoleAgentCapability) -> some View {
         switch (capability.name, capability.version) {
-        case ("query.codex.usage", 1): codexContent(capability)
         case ("query.network.listeners", 1): listenersContent(capability)
         default:
             if capability.name.hasPrefix("query.") {
@@ -668,6 +658,13 @@ struct DeviceMetricsView: View {
                 .fixedSize(horizontal: false, vertical: true)
         }.frame(maxWidth: .infinity, alignment: .leading).accessibilityElement(children: .combine)
     }
+    private func sampleTime(_ value: String) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let date = formatter.date(from: value) ?? ISO8601DateFormatter().date(from: value)
+        return date?.formatted(date: .numeric, time: .standard) ?? value
+    }
+
     private func formatByteRate(_ bytes: Double) -> String {
         let units = ["B/s", "KiB/s", "MiB/s", "GiB/s", "TiB/s"]
         var value = bytes
@@ -675,89 +672,7 @@ struct DeviceMetricsView: View {
         while value >= 1024 && index < units.count - 1 { value /= 1024; index += 1 }
         return String(format: index == 0 ? "%.0f %@" : "%.1f %@", value, units[index])
     }
-    @ViewBuilder private func codexContent(_ capability: ConsoleAgentCapability) -> some View {
-        let entry = state.entries[capability.name]
-        let usage = codexUsage(for: capability)
-        queryStatus(capability)
-        if let usage {
-            HakoUnderlineTabs(title: "Codex 数据", options: CodexTab.allCases, selection: $codexTab) {
-                $0.rawValue
-            }
-            if codexTab == .sessions { runningSessionsContent(usage) }
-            else { CodexUsageChart(usage: usage) }
-            if !usage.available { Text("未检测到本机 Codex 日志，显示的是此前采集的数据。").font(.footnote).foregroundStyle(.secondary) }
-            DisclosureGroup(isExpanded: $showingCodexNotes) {
-                VStack(alignment: .leading, spacing: 10) {
-                    ForEach(Array(usage.warnings.enumerated()), id: \.offset) { _, warning in
-                        Text(codexWarning(warning)).font(.footnote).foregroundStyle(.orange)
-                    }
-                    Text("采集于 \(sampleTime(usage.collectedAt))").font(.footnote).foregroundStyle(.secondary)
-                    Text("设备时区：\(usage.timeZone)").font(.footnote).foregroundStyle(.secondary)
-                    Text("每次发送任务或消息计 1 次调用，不累计内部多轮模型调用。Token 总量含缓存输入与推理输出。开启实时刷新后，设备在任务状态变化时推送数据。")
-                        .font(.footnote).foregroundStyle(.secondary)
-                }.padding(.top, 12)
-            } label: {
-                HStack {
-                    Text("数据说明")
-                    Spacer()
-                    if !usage.warnings.isEmpty {
-                        Text("\(usage.warnings.count) 条提示").font(.caption).foregroundStyle(.orange)
-                    }
-                }
-            }.font(.subheadline)
-        } else if entry?.result != nil && entry?.error == nil && entry?.version == 1 {
-            Text("设备返回的 Codex 统计格式无效。").font(.footnote).foregroundStyle(.red)
-        }
-    }
-    private func runningSessionsContent(_ usage: ConsoleCodexUsage) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 8) {
-                Text("处理中会话").font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
-                Text(usage.runningSessions.map { "\($0) 个" } ?? "—")
-                    .font(.caption.weight(.semibold)).monospacedDigit()
-                    .foregroundStyle(Color.accentColor)
-                    .padding(.horizontal, 8).padding(.vertical, 3)
-                    .background(Color.accentColor.opacity(0.12), in: Capsule())
-                Spacer()
-            }
-            if let sessions = usage.runningSessionDetails, !sessions.isEmpty {
-                ForEach(Array(sessions.enumerated()), id: \.offset) { _, session in
-                    VStack(alignment: .leading, spacing: 7) {
-                        Text(session.projectName)
-                            .font(.caption.weight(.semibold)).foregroundStyle(Color.accentColor)
-                        Text(session.title)
-                            .font(.subheadline.weight(.medium)).foregroundStyle(.primary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(12)
-                    .background(Color(uiColor: .tertiarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 12))
-                    .accessibilityElement(children: .combine)
-                }
-            } else if usage.runningSessions == 0 {
-                Text("暂无处理中会话").font(.footnote).foregroundStyle(.secondary)
-            } else if let count = usage.runningSessions, count > 0 {
-                Text("此 Agent 未提供会话信息，更新后可查看项目与标题。").font(.footnote).foregroundStyle(.secondary)
-            } else {
-                Text("当前会话状态暂不可用").font(.footnote).foregroundStyle(.secondary)
-            }
-        }
-    }
-    private func codexWarning(_ warning: String) -> String {
-        switch warning {
-        case "部分旧版 token 用量来自日志更新记录，可能不完整。":
-            return "部分历史 Token 记录可能缺失，统计值可能低于实际消耗。"
-        case "部分旧版记录只有 token 总量，输入/输出明细不完整。":
-            return "部分历史记录仅有 Token 总量，已记录的总量仍会展示，但无法准确拆分输入与输出。"
-        default: return warning
-        }
-    }
-    private func sampleTime(_ value: String) -> String {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        let date = formatter.date(from: value) ?? ISO8601DateFormatter().date(from: value)
-        return date?.formatted(date: .numeric, time: .standard) ?? value
-    }
+
 }
 
 
@@ -767,7 +682,7 @@ private extension ConsoleAgent {
         let grouped = AndroidDeviceCommand.pageNames(supported)
         return (capabilities ?? []).filter {
             ($0.version != 1 || grouped.contains($0.name)) &&
-            $0.name != "action.xkode.tasks.manage" && !DeviceGitCommand.supporting.contains($0.name)
+            $0.name != "query.codex.usage" && $0.name != "action.xkode.tasks.manage" && !DeviceGitCommand.supporting.contains($0.name)
                 && $0.name != DeviceServiceCommand.start
                 && $0.name != DeviceAgentVersions.command
                 && $0.name != AgentLanDescriptor.command

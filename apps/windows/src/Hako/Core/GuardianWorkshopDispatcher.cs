@@ -12,6 +12,7 @@ internal sealed record LocalWorkshopTerminal(string OperationId, WorkshopTermina
 
 internal sealed class GuardianWorkshopDispatcher(string profile) : IWorkshopDispatcher
 {
+    private readonly LocalRpcLog log = LocalRpcLog.ForProfile(profile, "guardian");
     private string? scope;
     public void SetNotificationScope(string? value) => scope = value;
     public async Task<object?> CallAsync(string method, JsonElement parameters, CancellationToken token)
@@ -23,12 +24,12 @@ internal sealed class GuardianWorkshopDispatcher(string profile) : IWorkshopDisp
             CodexJson.Keys(parameters);
             return await CommandHost.OpenAsync(profile, token);
         }
-        try { return await LocalRpc.CallAsync(LocalRpc.MainPipe(profile), new("workshop", method, 1, parameters, scope), token); }
+        try { return await LocalRpc.CallAsync(LocalRpc.MainPipe(profile), new("workshop", method, 1, parameters, scope), token, log); }
         catch (AgentActionException error) { throw Failure(error); }
     }
     public async Task WatchAsync(JsonElement parameters, Func<JsonElement, Task> publish, CancellationToken token)
     {
-        try { await LocalRpc.StreamAsync(LocalRpc.MainPipe(profile), new("workshop.watch", "", 1, parameters, scope), publish, token); }
+        try { await LocalRpc.StreamAsync(LocalRpc.MainPipe(profile), new("workshop.watch", "", 1, parameters, scope), publish, token, log); }
         catch (AgentActionException error) { throw Failure(error); }
     }
     private static WorkshopException Failure(AgentActionException error) => new(error.Code,
@@ -46,7 +47,7 @@ internal sealed class GuardianWorkshopDispatcher(string profile) : IWorkshopDisp
                     {
                         var terminal = value.Deserialize<LocalWorkshopTerminal>(WorkshopProtocol.Json)!;
                         return publish(terminal.Result with { OperationId = terminal.OperationId });
-                    }, token);
+                    }, token, log);
             }
             catch (AgentActionException) { /* Reattach this read-only stream when the main process returns. */ }
             await Task.Delay(1000, token);

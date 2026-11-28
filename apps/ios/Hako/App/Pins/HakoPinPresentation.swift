@@ -40,18 +40,26 @@ struct HakoPinGestureHost: UIViewControllerRepresentable {
     private var edge: UIPanGestureRecognizer?
     private var drawer: UIHostingController<HakoPinDrawer>?
     private var drawerWindow: UIWindow?
+    private weak var notificationHost: UIViewController?
     private var drawerPan: UIPanGestureRecognizer?
     private var motion: HakoPinDrawerMotion?
     private var initialProgress: CGFloat = 0
     private var settlement: Task<Void, Never>?
-    private var selectionTask: Task<Void, Never>?
+    private enum Presentation {
+        case pinned(HakoPinnedPage)
+        case notification(WorkshopPushNotice)
+        case navigation(@MainActor () -> Void)
+    }
+    private lazy var presentations = HakoPresentationQueue<Presentation> { [weak self] request, isCurrent in
+        await self?.perform(request, isCurrent: isCurrent)
+    }
     private var onEnter: ((HakoPinnedPage) -> Void)?
     private let registry = HakoApplications.pins
 
     func attach(to window: UIWindow, onEnter: @escaping (HakoPinnedPage) -> Void) {
         self.onEnter = onEnter
         guard self.window !== window else { return }
-        selectionTask?.cancel()
+        if self.window != nil { presentations.cancel() }
         if let edge { self.window?.removeGestureRecognizer(edge) }
         removeDrawer()
         self.window = window
@@ -63,7 +71,7 @@ struct HakoPinGestureHost: UIViewControllerRepresentable {
 
     func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
         if gestureRecognizer === edge {
-            guard drawer == nil, selectionTask == nil, let edge, !(topController() is UIAlertController) else { return false }
+            guard drawer == nil, !presentations.isBusy, let edge, !(topController() is UIAlertController) else { return false }
             let velocity = edge.velocity(in: window)
             return HakoPinDrag.opens(velocityX: Double(velocity.x), velocityY: Double(velocity.y))
         }
@@ -128,12 +136,13 @@ struct HakoPinGestureHost: UIViewControllerRepresentable {
     }
 
     func openDrawer() {
+        trace("请求打开快捷访问")
         createDrawer()
         settleDrawer(open: true)
     }
 
     private func createDrawer() {
-        guard let window, let parent = topController(), drawer == nil, selectionTask == nil else { return }
+        guard let window, let parent = topController(), drawer == nil, !presentations.isBusy else { return }
         guard let scene = window.windowScene else { return }
         window.endEditing(true)
         let motion = HakoPinDrawerMotion(width: min(330, max(1, window.bounds.width - 52)))
@@ -156,6 +165,7 @@ struct HakoPinGestureHost: UIViewControllerRepresentable {
         overlay.isHidden = false
         drawerWindow = overlay
         drawer = host
+        trace("快捷访问浮层已创建")
     }
 
     private func closeDrawer() {
@@ -164,6 +174,7 @@ struct HakoPinGestureHost: UIViewControllerRepresentable {
 
     private func settleDrawer(open: Bool) {
         guard let motion else { return }
+        trace(open ? "快捷访问开始展开" : "快捷访问开始收起")
         settlement?.cancel()
         motion.dragging = false; motion.settling = true
         let duration = UIAccessibility.isReduceMotionEnabled ? 0.0 : 0.22
@@ -172,6 +183,7 @@ struct HakoPinGestureHost: UIViewControllerRepresentable {
             do { try await Task.sleep(for: .seconds(duration)) } catch { return }
             guard let self, let motion, self.motion === motion else { return }
             motion.settling = false
+            self.trace(open ? "快捷访问展开完成" : "快捷访问收起完成")
             if open { UIAccessibility.post(notification: .screenChanged, argument: self.drawer?.view) }
             else { self.removeDrawer() }
         }
@@ -184,55 +196,198 @@ struct HakoPinGestureHost: UIViewControllerRepresentable {
         drawerWindow?.isHidden = true; drawerWindow?.rootViewController = nil
         drawerWindow = nil
         drawer = nil
+        trace("快捷访问浮层已移除")
         UIAccessibility.post(notification: .screenChanged, argument: topController()?.view)
     }
 
     private func select(_ page: HakoPinnedPage) {
-        guard selectionTask == nil, registry.contains(page) else { return }
+        guard !presentations.isBusy, registry.contains(page) else { return }
+        trace("点击快捷会话/页面")
+        presentations.submit(.pinned(page))
+    }
+
+    private func enter(_ page: HakoPinnedPage) {
+        guard registry.contains(page) else { return }
+        navigateAfterDismissing { [weak self] in self?.onEnter?(page) }
+    }
+
+    func presentWorkshopNotification(_ notice: WorkshopPushNotice) {
+        trace("收到通知会话预览请求")
+        presentations.submit(.notification(notice))
+    }
+
+    func navigateAfterDismissing(_ action: @escaping @MainActor () -> Void) {
+        trace("收到完整页面跳转请求")
+        presentations.submit(.navigation(action))
+    }
+
+    private func perform(_ request: Presentation, isCurrent: @escaping @MainActor () -> Bool) async {
+        let operation = UUID().uuidString
+        trace("弹层请求开始处理", detail: "operation=\(operation)")
+        defer { trace("弹层请求处理结束", detail: "operation=\(operation), current=\(isCurrent())") }
+        // Leave the originating button/notification callback before touching UIKit.
+        await Task.yield()
+        let deadline = ContinuousClock.now.advanced(by: .seconds(10))
+        while isCurrent(), window == nil, ContinuousClock.now < deadline {
+            do { try await Task.sleep(for: .milliseconds(50)) } catch { return }
+        }
+        guard isCurrent() else { return }
+        guard let sourceWindow = window else {
+            trace("等待页面窗口超时")
+            HakoDiagnosticStore.shared.record(.presentation, detail: "通知/快捷页面请求在 10 秒内未获得页面窗口，未继续导航。")
+            return
+        }
+        if let overlay = drawerWindow {
+            guard let top = await stablePresenter(in: overlay, isCurrent: isCurrent),
+                  !blocksNavigation(in: overlay, top: top) else { return }
+            if let root = overlay.rootViewController, root.presentedViewController != nil {
+                guard await transition({ root.dismiss(animated: false, completion: $0) }), isCurrent() else { return }
+            }
+        }
+        guard isCurrent() else { return }
         removeDrawer()
-        selectionTask = Task { [weak self, weak sourceWindow = window] in
-            guard let self else { return }
-            defer { self.selectionTask = nil }
-            guard let sourceWindow else { return }
-            // Detach the drawer after its button event finishes before presenting
-            // another hosting tree. Keep one request through any ongoing transition.
+        guard let presenter = await stablePresenter(in: sourceWindow, isCurrent: isCurrent) else { return }
+        switch request {
+        case .navigation(let action):
+            guard !blocksNavigation(in: sourceWindow, top: presenter), let root = sourceWindow.rootViewController else { return }
+            HakoLog.record(.hako, "准备关闭弹层并切换页面")
+            if root.presentedViewController != nil {
+                guard await transition({ root.dismiss(animated: true, completion: $0) }) else { return }
+            }
+            guard isCurrent(), window === sourceWindow,
+                  await stablePresenter(in: sourceWindow, isCurrent: isCurrent) === root else { return }
+            // SwiftUI may finish its sheet binding update in the same dismissal callback.
             await Task.yield()
-            while !Task.isCancelled {
-                guard self.window === sourceWindow, !sourceWindow.isHidden,
-                      sourceWindow.windowScene?.activationState == .foregroundActive else { return }
-                if let presenter = self.topController(), !(presenter is UIAlertController),
-                   presenter.viewIfLoaded?.window === sourceWindow,
-                   !presenter.isBeingPresented, !presenter.isBeingDismissed,
-                   presenter.transitionCoordinator == nil, presenter.presentedViewController == nil {
-                    let content = HakoPinPreview(page: page, registry: self.registry, presenter: self) { [weak self] in self?.enter(page) }
-                    let host = UIHostingController(rootView: content)
-                    host.overrideUserInterfaceStyle = presenter.traitCollection.userInterfaceStyle
-                    host.modalPresentationStyle = .pageSheet
-                    host.sheetPresentationController?.detents = [.large()]
-                    host.sheetPresentationController?.prefersGrabberVisible = true
-                    await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-                        presenter.present(host, animated: true) { continuation.resume() }
-                    }
-                    return
-                }
-                do { try await Task.sleep(for: .milliseconds(50)) } catch { return }
+            guard isCurrent() else { return }
+            HakoLog.record(.hako, "弹层已关闭，开始切换页面")
+            trace("开始切换完整页面")
+            action()
+        case .pinned(let page):
+            guard registry.contains(page) else { return }
+            let content = HakoPinPreview(page: page, registry: registry, presenter: self) { [weak self] in self?.enter(page) }
+            await present(UIHostingController(rootView: content), from: presenter)
+        case .notification(let notice):
+            var targetPresenter = presenter
+            if let previous = notificationHost, let owner = previous.presentingViewController {
+                guard !blocksNavigation(in: sourceWindow, top: presenter),
+                      await transition({ owner.dismiss(animated: true, completion: $0) }), isCurrent(),
+                      let next = await stablePresenter(in: sourceWindow, isCurrent: isCurrent) else { return }
+                notificationHost = nil
+                targetPresenter = next
+            }
+            guard let content = HakoApplications.notifications.preview(for: notice, destination: .codeWorkshop, onOpen: {
+                BuildPushSubscription.shared.openWorkshopNotice(notice)
+            }) else { return }
+            HakoLog.record(.codeWorkshop, "准备从当前弹层打开通知会话预览")
+            let host = UIHostingController(rootView: HakoWorkshopNotificationPreview(content: content, presenter: self))
+            notificationHost = host
+            if await present(host, from: targetPresenter) {
+                HakoLog.record(.codeWorkshop, "通知会话预览已呈现")
             }
         }
     }
 
-    private func enter(_ page: HakoPinnedPage) {
-        guard registry.contains(page), let root = window?.rootViewController else { return }
-        var current: UIViewController? = root
-        while let controller = current {
+    @discardableResult private func present(_ host: UIViewController, from presenter: UIViewController) async -> Bool {
+        host.overrideUserInterfaceStyle = presenter.traitCollection.userInterfaceStyle
+        host.modalPresentationStyle = .pageSheet
+        host.sheetPresentationController?.detents = [.large()]
+        host.sheetPresentationController?.prefersGrabberVisible = true
+        return await transition { presenter.present(host, animated: true, completion: $0) }
+    }
+
+    private func stablePresenter(in sourceWindow: UIWindow, isCurrent: @escaping @MainActor () -> Bool) async -> UIViewController? {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(10))
+        while isCurrent(), !sourceWindow.isHidden, ContinuousClock.now < deadline {
+            var top = sourceWindow.rootViewController
+            var visited = Set<ObjectIdentifier>()
+            while let controller = top, visited.insert(ObjectIdentifier(controller)).inserted,
+                  let next = controller.presentedViewController, !next.isBeingDismissed { top = next }
+            if sourceWindow.windowScene?.activationState == .foregroundActive, let top,
+               !(top is UIAlertController), top.viewIfLoaded?.window === sourceWindow,
+               !top.isBeingPresented, !top.isBeingDismissed, top.transitionCoordinator == nil,
+               top.presentedViewController == nil { return top }
+            do { try await Task.sleep(for: .milliseconds(50)) } catch { return nil }
+        }
+        if isCurrent() {
+            HakoLog.record(.hako, .warning, "等待弹层切换就绪超时，未继续导航")
+            trace("等待弹层切换就绪超时")
+            HakoDiagnosticStore.shared.record(.presentation, detail: "未能在 10 秒期限内取得就绪弹层（可能已隐藏或切换），未继续导航。\n" + diagnosticContext())
+        }
+        return nil
+    }
+
+    private func blocksNavigation(in sourceWindow: UIWindow, top: UIViewController) -> Bool {
+        var current = sourceWindow.rootViewController
+        var visited = Set<ObjectIdentifier>()
+        while let controller = current, visited.insert(ObjectIdentifier(controller)).inserted {
             if controller.isModalInPresentation {
-                let alert = UIAlertController(title: "请先保存当前页面", message: "当前页面有未完成的修改或操作。关闭预览后，先保存或关闭该页面，再进入固定页面。", preferredStyle: .alert)
+                trace("页面跳转被未完成修改/操作阻止")
+                let alert = UIAlertController(title: "请先保存当前页面", message: "当前页面有未完成的修改或操作，请先保存或关闭该页面，再切换。", preferredStyle: .alert)
                 alert.addAction(UIAlertAction(title: "知道了", style: .default))
-                topController()?.present(alert, animated: true)
-                return
+                top.present(alert, animated: true)
+                return true
             }
             current = controller.presentedViewController
         }
-        root.dismiss(animated: true) { [weak self] in self?.onEnter?(page) }
+        return false
+    }
+
+    private func transition(_ start: (@escaping () -> Void) -> Void) async -> Bool {
+        trace("UIKit 弹层动画开始")
+        let context = diagnosticContext()
+        return await withCheckedContinuation { continuation in
+            let completion = HakoPresentationCompletion(continuation, context: context)
+            completion.armTimeout()
+            start { completion.finish(true) }
+        }
+    }
+
+    private func trace(_ event: String, detail: String = "") {
+        HakoDiagnosticStore.shared.breadcrumb(event, detail: detail + "\n" + diagnosticContext())
+    }
+
+    // Controller types and transition flags only: never capture page titles,
+    // notification contents, URLs, conversation messages or credential fields.
+    private func diagnosticContext() -> String {
+        func chain(_ root: UIViewController?) -> String {
+            var current = root, visited = Set<ObjectIdentifier>(), result: [String] = []
+            while let controller = current, result.count < 8, visited.insert(ObjectIdentifier(controller)).inserted {
+                result.append("\(String(describing: type(of: controller)).prefix(100))[presenting=\(controller.isBeingPresented), dismissing=\(controller.isBeingDismissed), transition=\(controller.transitionCoordinator != nil), protected=\(controller.isModalInPresentation)]")
+                current = controller.presentedViewController
+            }
+            return result.joined(separator: " → ")
+        }
+        return "scene=\(scenePhase), queueBusy=\(presentations.isBusy), drawer=\(drawer != nil), settling=\(motion?.settling ?? false), hidden=\(window?.isHidden ?? true)\n页面：\(chain(window?.rootViewController))\n浮层：\(chain(drawer?.presentedViewController))"
+    }
+}
+
+@MainActor private final class HakoPresentationCompletion {
+    private var continuation: CheckedContinuation<Bool, Never>?
+    private var timeout: Task<Void, Never>?
+    private let context: String
+    init(_ continuation: CheckedContinuation<Bool, Never>, context: String) { self.continuation = continuation; self.context = context }
+    func armTimeout() {
+        timeout = Task {
+            do { try await Task.sleep(for: .seconds(10)) } catch { return }
+            HakoLog.record(.hako, .warning, "弹层动画完成回调超时，未继续导航")
+            HakoDiagnosticStore.shared.record(.presentation, detail: "UIKit 弹层动画完成回调超过 10 秒未返回。\n开始时的状态：\n" + context)
+            finish(false)
+        }
+    }
+    func finish(_ completed: Bool) {
+        guard let continuation else { return }
+        self.continuation = nil
+        HakoDiagnosticStore.shared.breadcrumb(completed ? "UIKit 弹层动画完成" : "UIKit 弹层动画超时")
+        timeout?.cancel(); timeout = nil
+        continuation.resume(returning: completed)
+    }
+}
+
+private struct HakoWorkshopNotificationPreview: View {
+    let content: AnyView
+    @ObservedObject var presenter: HakoPinPresenter
+    var body: some View {
+        content.environment(\.scenePhase, presenter.scenePhase).tint(.primary)
     }
 }
 
@@ -243,7 +398,7 @@ private struct HakoPinPreview: View {
     let onEnter: () -> Void
 
     var body: some View {
-        SettingsSheet(title: page.title, closePlacement: .topBarTrailing) {
+        SettingsSheet(title: page.title, edgeDismissEnabled: true, closePlacement: .topBarTrailing) {
             registry.content(for: page)
                 .environment(\.hakoPinPreview, true)
                 .environment(\.hakoPinEnter, onEnter)
@@ -347,7 +502,7 @@ private struct HakoPinDrawer: View {
             .accessibilityAction(.escape, close)
         }
         .sheet(isPresented: $showingSettings) {
-            SettingsSheet(title: "设置") {
+            SettingsSheet(title: "设置", edgeDismissEnabled: true) {
                 SettingsView()
             }
             .environment(\.scenePhase, presenter.scenePhase)

@@ -25,9 +25,15 @@ import SwiftUI
                                 VStack(alignment: .leading, spacing: 5) {
                                     Text(agent.name).foregroundStyle(.primary)
                                     Text(agent.id).font(.caption.monospaced()).foregroundStyle(.secondary)
-                                    Text(agent.online ? "在线" : "离线").font(.caption).foregroundStyle(.secondary)
                                 }
                                 Spacer()
+                                HStack(spacing: 5) {
+                                    Circle().frame(width: 6, height: 6).accessibilityHidden(true)
+                                    Text(agent.online ? "在线" : "离线")
+                                }
+                                .font(.caption)
+                                .foregroundStyle(agent.online ? Color.green : Color.secondary)
+                                .fixedSize()
                                 Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)

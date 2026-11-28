@@ -25,6 +25,14 @@ struct HakoLogEntry: Codable, Identifiable, Sendable {
     }
 }
 
+enum HakoHangLog {
+    static let message = "系统检测到界面卡顿"
+
+    static func includes(_ entry: HakoLogEntry) -> Bool {
+        entry.source == .hako && entry.message == message
+    }
+}
+
 enum HakoLogExport {
     static func text(title: String, entries: [HakoLogEntry], version: String, now: Date = .now) -> String {
         let date = ISO8601DateFormatter()
@@ -52,6 +60,12 @@ final class HakoLogStore: @unchecked Sendable {
 
     init(fileURL: URL?) {
         self.fileURL = fileURL
+        // The first startup log may be emitted by UIKit on the main thread.
+        // Load retained HTTP details on the same queue as subsequent appends.
+        queue.async { self.load() }
+    }
+
+    private func load() {
         guard let fileURL, FileManager.default.fileExists(atPath: fileURL.path) else { return }
         do {
             let stored = try JSONDecoder().decode([HakoLogEntry].self, from: Data(contentsOf: fileURL))
@@ -81,6 +95,22 @@ final class HakoLogStore: @unchecked Sendable {
     }
 
     func snapshot() -> (entries: [HakoLogEntry], issue: String?) { queue.sync { (Array(values.reversed()), storageIssue) } }
+    func snapshotAsync() async -> (entries: [HakoLogEntry], issue: String?) {
+        await withCheckedContinuation { continuation in
+            queue.async { continuation.resume(returning: (Array(self.values.reversed()), self.storageIssue)) }
+        }
+    }
+
+    func clearHangDiagnostics() async {
+        await withCheckedContinuation { continuation in
+            queue.async {
+                self.pendingSave = false; self.saveTicket = UUID()
+                self.values.removeAll(where: HakoHangLog.includes)
+                self.save()
+                continuation.resume()
+            }
+        }
+    }
     func clear(source: HakoLogSource? = nil) {
         queue.sync {
             pendingSave = false; saveTicket = UUID()

@@ -26,8 +26,17 @@ struct WorkshopConversationView: View {
     @State private var detail: WorkshopEntry?
     @State private var artifact: WorkshopArtifact?
     @State private var browserLink: WorkshopBrowserLink?
+    @State private var linkedFile: WorkshopProjectFile?
     @State private var showingInfo = false
     @State private var showingContextUsage = false
+    @State private var visibleTranscriptIDs: Set<String> = []
+    @State private var collapsedPlanIDs: Set<String> = []
+    @State private var expandedFloatingPlanID: String?
+    @State private var collapsedAgentGroups: Set<String> = []
+    @State private var expandedAgentRows: Set<String> = []
+    @State private var expandedFloatingAgentID: String?
+    @State private var agentTopPositions: [String: CGFloat] = [:]
+    @State private var floatingPanelsHeight: CGFloat = 0
     @ScaledMetric(relativeTo: .caption) private var contextIconSize = 12
     @State private var showingFiles = false
     @State private var confirmsCompact = false
@@ -43,6 +52,7 @@ struct WorkshopConversationView: View {
     @State private var capturingPage = false
     @State private var scrollFollowing = ConversationScrollFollowing()
     @State private var scrollPosition = ScrollPosition(edge: .bottom)
+    private let latestMessageAnchor = "workshop-transcript-latest-edge"
     @State private var synchronizationOwner = UUID()
 
     init(conversation: WorkshopConversation, onSwitch: (() -> Void)? = nil,
@@ -59,139 +69,38 @@ struct WorkshopConversationView: View {
         _commands = StateObject(wrappedValue: WorkshopCommands(store: conversation.store, agent: conversation.agent, application: conversation.application))
     }
 
-    private var transcriptVisible: Bool { detail == nil && artifact == nil && browserLink == nil && previewPhoto == nil && !showingCamera && !showingInfo && !showingFiles && !showingCommandTask && !showingSidechats && standaloneSidechatTransfer == nil && returnToParent == nil && !sidechatOverlayPresented }
+    private var transcriptVisible: Bool { detail == nil && artifact == nil && browserLink == nil && linkedFile == nil && previewPhoto == nil && !showingCamera && !showingInfo && !showingFiles && !showingCommandTask && !showingSidechats && standaloneSidechatTransfer == nil && returnToParent == nil && !sidechatOverlayPresented }
     private var activeSidechatParent: WorkshopConversation? { sidechatParent ?? resolvedSidechatParent }
 
+    private var activeExecutionPlan: WorkshopExecutionPlan? {
+        WorkshopExecutionPlan.active(in: conversation.entries, operation: conversation.operation)
+    }
+
+    private var floatingExecutionPlan: WorkshopExecutionPlan? {
+        guard let plan = activeExecutionPlan else { return nil }
+        let groups = conversation.presentation.groups
+        guard let index = groups.firstIndex(where: { $0.entries.contains(where: { $0.id == plan.id }) }),
+              !visibleTranscriptIDs.contains(groups[index].id),
+              let firstVisible = groups.firstIndex(where: { visibleTranscriptIDs.contains($0.id) }),
+              index < firstVisible else { return nil }
+        return plan
+    }
+
+    private var inlineAgentGroups: [WorkshopAgentGroup] { conversation.presentation.agentGroups }
+
+    private var floatingAgentGroup: WorkshopAgentGroup? {
+        guard conversation.operation?.active == true, let turn = conversation.operation?.turnId,
+              !conversation.entries.contains(where: { $0.turn?.id == turn && ["completed", "failed", "interrupted"].contains($0.turn?.state ?? "") }),
+              let group = inlineAgentGroups.first(where: { $0.id == turn }) else { return nil }
+        let groups = conversation.presentation.groups
+        guard let index = groups.firstIndex(where: { $0.id == group.anchorID }) else { return nil }
+        if let first = groups.firstIndex(where: { visibleTranscriptIDs.contains($0.id) }), index < first { return group }
+        guard visibleTranscriptIDs.contains(group.anchorID), let top = agentTopPositions[group.id], top <= floatingPanelsHeight else { return nil }
+        return group
+    }
+
     var body: some View {
-        let transcript = conversation.presentation
-        let artifactsByEntry = transcript.artifactsByEntry
-        let groups = transcript.groups.compactMap { group -> WorkshopEntryGroup? in
-            var group = group
-            group.entries.removeAll { $0.kind == "notice" && $0.id == conversation.operation?.unconfirmedNoticeID }
-            return group.entries.isEmpty ? nil : group
-        }
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 20) {
-                if conversation.historyCursor != nil {
-                    Button("加载更早的消息") { Task { await conversation.loadHistory(more: true) } }
-                        .font(.caption).disabled(conversation.loadingHistory)
-                }
-                if let cachedAt = conversation.cachedAt {
-                    HStack(spacing: 4) {
-                        Text(conversation.synchronizing ? "已显示缓存，正在更新 ·" : "显示缓存 ·")
-                        Text(cachedAt, style: .relative)
-                    }.font(.caption).foregroundStyle(HakoStyle.muted)
-                }
-                if transcript.isEmpty {
-                    VStack(spacing: 10) {
-                        Text(conversation.threadId == nil ? "想在 \(conversation.application.name) 中完成什么？" : "暂未加载会话消息")
-                            .font(.subheadline).foregroundStyle(HakoStyle.muted)
-                        if conversation.threadId != nil {
-                            ProgressView().opacity(conversation.loadingHistory || conversation.restoringCache ? 1 : 0)
-                                .accessibilityHidden(!conversation.loadingHistory && !conversation.restoringCache)
-                        }
-                    }.frame(maxWidth: .infinity).padding(.vertical, 40)
-                }
-                ForEach(groups) { group in
-                    VStack(alignment: .leading, spacing: 0) {
-                        ForEach(group.entries) { entry in
-                            VStack(alignment: .leading, spacing: 12) {
-                                entryView(entry)
-                                if let questions = entry.questions, !questions.isEmpty {
-                                    WorkshopAsyncQuestionView(entry: entry, questions: questions, conversation: conversation)
-                                }
-                                ForEach(artifactsByEntry[entry.id] ?? []) { file in
-                                    WorkshopArtifactButton(file: file) { artifact = file }
-                                }
-                            }.id(entry.id)
-                        }
-                    }
-                    .padding(.vertical, group.isRecords ? 3 : 0)
-                    .background(group.isRecords ? HakoStyle.card : Color.clear, in: RoundedRectangle(cornerRadius: 10))
-                }
-                ForEach(conversation.approvals) { approval in
-                    WorkshopApprovalView(approval: approval, conversation: conversation)
-                }
-                if let operation = conversation.operation, !operation.resultUnconfirmed,
-                   !transcript.turnFooters.values.contains(where: { $0.id == operation.turnId }) {
-                    WorkshopOperationStatus(operation: operation)
-                }
-                if let error = conversation.presentedError {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text(error).font(.footnote).textSelection(.enabled)
-                        Button(conversation.synchronizing ? "正在重新同步…" : "重新同步会话与任务状态") { Task { await conversation.checkResult() } }
-                            .font(.footnote).disabled(conversation.busy || conversation.synchronizing)
-                        if conversation.canRetry {
-                            Button("重试原消息") { Task { await conversation.retryOriginal() } }
-                                .font(.footnote).disabled(conversation.busy)
-                        }
-                    }
-                    .padding(14).frame(maxWidth: .infinity, alignment: .leading)
-                    .background(HakoStyle.card, in: RoundedRectangle(cornerRadius: 12))
-                }
-                ForEach(transcript.queued) { entry in
-                    followupView(entry).id(entry.id)
-                }
-            }
-            .padding(20)
-            .environment(\.openURL, OpenURLAction { url in
-                if url.absoluteString == UIApplication.openSettingsURLString { return .systemAction }
-                guard let link = WorkshopBrowserLink(url: url) else { return .discarded }
-                browserLink = link
-                return .handled
-            })
-        }
-        .scrollPosition($scrollPosition)
-        .defaultScrollAnchor(.bottom, for: .initialOffset)
-        .onAppear {
-            WorkshopRuntime.shared.enter(synchronizationOwner, conversation: conversation, preview: onSwitch != nil || pinPreview)
-            scrollFollowing = ConversationScrollFollowing()
-            updateReadingLatest(scenePhase == .active && transcriptVisible)
-            // Keep an edge target through the initial lazy layout and later
-            // streaming updates instead of resolving an unmeasured child ID.
-            scrollPosition = ScrollPosition(edge: .bottom)
-        }
-        .onScrollGeometryChange(for: ConversationScrollFollowing.Layout.self) { geometry in
-            ConversationScrollFollowing.Layout(contentHeight: geometry.contentSize.height,
-                viewportHeight: geometry.visibleRect.height, visibleBottom: geometry.visibleRect.maxY)
-        } action: { _, layout in
-            if scrollFollowing.observe(layout) { alignLatestMessage() }
-            updateReadingLatest(layout.nearBottom && scenePhase == .active && transcriptVisible)
-        }
-        .onDisappear {
-            conversation.setReadingLatest(false)
-            WorkshopRuntime.shared.leave(synchronizationOwner, conversation: conversation)
-            Task { await conversation.store.flushComposerDrafts() }
-        }
-        .onChange(of: scenePhase) { _, phase in
-            updateReadingLatest(phase == .active && scrollFollowing.followsBottom && transcriptVisible)
-            if phase != .active { Task { await conversation.store.flushComposerDrafts() } }
-        }
-        .onChange(of: transcriptVisible) { _, visible in
-            updateReadingLatest(visible && scenePhase == .active && scrollFollowing.followsBottom)
-        }
-        .onReceive(WorkshopRuntime.shared.visibilityChanges) { _ in
-            updateReadingLatest(scenePhase == .active && transcriptVisible && scrollFollowing.followsBottom)
-        }
-        .onScrollPhaseChange { _, phase in
-            if phase == .tracking || phase == .interacting { scrollFollowing.interacting(true) }
-            else if phase == .idle { scrollFollowing.interacting(false) }
-        }
-        .onChange(of: conversation.presentation.revision) { _, _ in
-            followRenderedMessages()
-        }
-        .onChange(of: conversation.appendedMessageID) { _, id in
-            if let id {
-                // Sending precedes the asynchronous renderer. Do not scroll the
-                // old lazy layout while the keyboard and operation footer change.
-                scrollFollowing.messageAppended(id)
-                followRenderedMessages()
-            }
-        }
-        .scrollDismissesKeyboard(.interactively)
-        .background(HakoStyle.background)
-        .background(WorkshopKeyboardDismissal())
-        .background(WorkshopPageCaptureHost(capture: pageCapture).frame(width: 0, height: 0))
+        transcriptContent
         .navigationTitle(activeSidechatParent == nil ? conversation.title : "侧聊")
         .navigationBarTitleDisplayMode(.inline)
         .safeAreaInset(edge: .top, spacing: 0) {
@@ -214,7 +123,9 @@ struct WorkshopConversationView: View {
             }
             .overlay(alignment: .topLeading) {
                 GeometryReader { header in
-                    if showingContextUsage {
+                    VStack(spacing: 0) {
+                      VStack(spacing: 0) {
+                      if showingContextUsage {
                         contextUsageDetails
                             .font(.caption).foregroundStyle(HakoStyle.muted)
                             .padding(.horizontal, 20).padding(.vertical, 12)
@@ -223,10 +134,25 @@ struct WorkshopConversationView: View {
                             .overlay(alignment: .bottom) { Divider() }
                             .shadow(color: .black.opacity(0.08), radius: 8, y: 4)
                             .fixedSize(horizontal: false, vertical: true)
-                            // Place the panel's top below the actual header,
-                            // independently of its own height or alignment guides.
-                            .offset(y: header.size.height)
+                      }
+                      if let floatingPlan = floatingExecutionPlan {
+                          WorkshopExecutionPlanCard(plan: floatingPlan,
+                              expanded: Binding(get: { expandedFloatingPlanID == floatingPlan.id },
+                                  set: { expandedFloatingPlanID = $0 ? floatingPlan.id : nil }), floating: true)
+                      }
+                      }
+                      .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { floatingPanelsHeight = $0 }
+                      if let group = floatingAgentGroup {
+                          WorkshopInlineAgentsView(group: group, model: sidechats,
+                              expanded: Binding(get: { expandedFloatingAgentID == group.id },
+                                  set: { expandedFloatingAgentID = $0 ? group.id : nil }),
+                              expandedRows: $expandedAgentRows, floating: true)
+                      }
                     }
+                    .fixedSize(horizontal: false, vertical: true)
+                    // Both panels share one overlay stack: context expands
+                    // above the plan without changing the transcript's inset.
+                    .offset(y: header.size.height)
                 }
             }
             .zIndex(1)
@@ -340,6 +266,9 @@ struct WorkshopConversationView: View {
         }
         .sheet(item: $artifact) { file in WorkshopPreviewView(store: conversation.store, agent: conversation.agent, artifact: file) }
         .sheet(item: $browserLink) { link in WorkshopBrowserView(link: link) }
+        .sheet(item: $linkedFile) { file in
+            WorkshopLinkedFileView(store: conversation.store, agent: conversation.agent, application: conversation.application, file: file, threadId: conversation.threadId)
+        }
         .sheet(item: $previewPhoto) { photo in WorkshopPhotoPreview(photo: photo, photos: conversation.photos) }
         .sheet(isPresented: $showingCamera, onDismiss: finishCamera) {
             WorkshopCameraPicker { image in
@@ -354,7 +283,7 @@ struct WorkshopConversationView: View {
             }
         } message: { Text("请在系统设置中允许 Hako 使用相机，以拍照添加图片。") }
         .sheet(isPresented: $showingInfo) { WorkshopConversationSettings(conversation: conversation, commands: commands) }
-        .sheet(isPresented: $showingFiles) { WorkshopFilesView(store: conversation.store, agent: conversation.agent, application: conversation.application) }
+        .sheet(isPresented: $showingFiles) { WorkshopFilesView(store: conversation.store, agent: conversation.agent, application: conversation.application, threadId: conversation.threadId) }
         .sheet(isPresented: $showingSidechats) { WorkshopSidechatSheet(model: sidechats) }
         .sheet(item: $standaloneSidechatTransfer, onDismiss: {
             if openParentAfterTransfer { openParentAfterTransfer = false; returnToParent = activeSidechatParent }
@@ -373,14 +302,7 @@ struct WorkshopConversationView: View {
             Button("开始压缩") { Task { await conversation.compactContext() } }
         } message: { Text("将压缩当前会话的模型上下文，历史消息仍会保留。") }
         .task(id: commands.observationID) { await commands.observe() }
-        .task(id: "\(conversation.threadId ?? ""):\(conversation.operation?.active == true || sidechats.hasRunning):\(scenePhase == .active && transcriptVisible)") {
-            guard scenePhase == .active, transcriptVisible else { return }
-            repeat {
-                await sidechats.refreshCollaboration()
-                guard conversation.operation?.active == true || sidechats.hasRunning else { return }
-                try? await Task.sleep(for: .seconds(15))
-            } while !Task.isCancelled
-        }
+        .task(id: collaborationObservationID) { await observeCollaboration() }
         .task(id: selectedPhotos) { await loadPhotos(selectedPhotos) }
         .task { if conversation.models.isEmpty || conversation.modelError != nil { await conversation.loadModels() } }
         .task(id: conversation.parentThreadId) {
@@ -391,6 +313,172 @@ struct WorkshopConversationView: View {
             } catch is CancellationError { }
             catch { conversation.error = "暂时无法读取关联的主会话：" + error.localizedDescription }
         }
+    }
+
+    private var transcriptContent: some View {
+        let transcript = conversation.presentation
+        let artifactsByEntry = transcript.artifactsByEntry
+        let groups = transcript.groups.compactMap { group -> WorkshopEntryGroup? in
+            var group = group
+            group.entries.removeAll { $0.kind == "notice" && $0.id == conversation.operation?.unconfirmedNoticeID }
+            return group.entries.isEmpty ? nil : group
+        }
+        return ScrollView {
+            LazyVStack(alignment: .leading, spacing: 20) {
+                if conversation.historyCursor != nil {
+                    Button("加载更早的消息") { Task { await conversation.loadHistory(more: true) } }
+                        .font(.caption).disabled(conversation.loadingHistory)
+                }
+                if let cachedAt = conversation.cachedAt {
+                    HStack(spacing: 4) {
+                        Text(conversation.synchronizing ? "已显示缓存，正在更新 ·" : "显示缓存 ·")
+                        Text(cachedAt, style: .relative)
+                    }.font(.caption).foregroundStyle(HakoStyle.muted)
+                }
+                if transcript.isEmpty {
+                    VStack(spacing: 10) {
+                        Text(conversation.threadId == nil ? "想在 \(conversation.application.name) 中完成什么？" : "暂未加载会话消息")
+                            .font(.subheadline).foregroundStyle(HakoStyle.muted)
+                        if conversation.threadId != nil {
+                            ProgressView().opacity(conversation.loadingHistory || conversation.restoringCache ? 1 : 0)
+                                .accessibilityHidden(!conversation.loadingHistory && !conversation.restoringCache)
+                        }
+                    }.frame(maxWidth: .infinity).padding(.vertical, 40)
+                }
+                ForEach(groups) { group in
+                    VStack(alignment: .leading, spacing: 0) {
+                        ForEach(group.entries) { entry in
+                            VStack(alignment: .leading, spacing: 12) {
+                                entryView(entry)
+                                if let questions = entry.questions, !questions.isEmpty {
+                                    WorkshopAsyncQuestionView(entry: entry, questions: questions, conversation: conversation)
+                                }
+                                ForEach(artifactsByEntry[entry.id] ?? []) { file in
+                                    WorkshopArtifactButton(file: file) { artifact = file }
+                                }
+                            }.id(entry.id)
+                        }
+                    }
+                    .padding(.vertical, group.isRecords ? 3 : 0)
+                    .background(group.isRecords ? HakoStyle.card : Color.clear, in: RoundedRectangle(cornerRadius: 10))
+                }
+                ForEach(conversation.approvals) { approval in
+                    WorkshopApprovalView(approval: approval, conversation: conversation)
+                }
+                if let operation = conversation.operation, !operation.resultUnconfirmed,
+                   !transcript.turnFooters.values.contains(where: { $0.id == operation.turnId }) {
+                    WorkshopOperationStatus(operation: operation)
+                }
+                if let error = conversation.presentedError {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text(error).font(.footnote).textSelection(.enabled)
+                        Button(conversation.synchronizing ? "正在重新同步…" : "重新同步会话与任务状态") { Task { await conversation.checkResult() } }
+                            .font(.footnote).disabled(conversation.busy || conversation.synchronizing)
+                    }
+                    .padding(14).frame(maxWidth: .infinity, alignment: .leading)
+                    .background(HakoStyle.card, in: RoundedRectangle(cornerRadius: 12))
+                }
+                ForEach(transcript.queued) { entry in
+                    followupView(entry).id(entry.id)
+                }
+                Color.clear.frame(height: 1).id(latestMessageAnchor).accessibilityHidden(true)
+            }
+            .scrollTargetLayout()
+            .padding(.horizontal, 20).padding(.top, 20)
+            .environment(\.openURL, OpenURLAction { url in
+                if url.absoluteString == UIApplication.openSettingsURLString { return .systemAction }
+                if let link = WorkshopProjectLink(url: url, projectPath: conversation.application.path) {
+                    linkedFile = link.file
+                    return .handled
+                }
+                guard let link = WorkshopBrowserLink(url: url) else { return .discarded }
+                browserLink = link
+                return .handled
+            })
+        }
+        .scrollPosition($scrollPosition)
+        .coordinateSpace(name: "workshop-transcript-viewport")
+        .onScrollTargetVisibilityChange(idType: String.self, threshold: 0.01) { ids in
+            visibleTranscriptIDs = Set(ids)
+        }
+        .onChange(of: activeExecutionPlan?.id) { _, _ in expandedFloatingPlanID = nil }
+        .onChange(of: floatingExecutionPlan?.id) { _, id in
+            if id == nil { expandedFloatingPlanID = nil }
+        }
+        .onChange(of: floatingAgentGroup?.id) { _, id in
+            if id == nil { expandedFloatingAgentID = nil }
+        }
+        .onChange(of: expandedFloatingAgentID) { _, id in
+            if id != nil { expandedFloatingPlanID = nil }
+        }
+        .onChange(of: expandedFloatingPlanID) { _, id in
+            if id != nil { expandedFloatingAgentID = nil }
+        }
+        .defaultScrollAnchor(.bottom, for: .initialOffset)
+        .onAppear {
+            WorkshopRuntime.shared.enter(synchronizationOwner, conversation: conversation, preview: onSwitch != nil || pinPreview)
+            scrollFollowing = ConversationScrollFollowing()
+            updateReadingLatest(scenePhase == .active && transcriptVisible)
+            // Initial layout starts at the edge; subsequent corrections target
+            // the stable final row rather than LazyVStack's estimated height.
+            scrollPosition = ScrollPosition(edge: .bottom)
+            alignLatestMessage()
+        }
+        .onScrollGeometryChange(for: ConversationScrollFollowing.Layout.self) { geometry in
+            ConversationScrollFollowing.Layout(contentHeight: geometry.contentSize.height,
+                viewportHeight: geometry.visibleRect.height, visibleBottom: geometry.visibleRect.maxY)
+        } action: { _, layout in
+            if scrollFollowing.observe(layout) { alignLatestMessage() }
+            updateReadingLatest(layout.nearBottom && scenePhase == .active && transcriptVisible)
+        }
+        .onDisappear {
+            conversation.setReadingLatest(false)
+            WorkshopRuntime.shared.leave(synchronizationOwner, conversation: conversation)
+            Task { await conversation.store.flushComposerDrafts() }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            updateReadingLatest(phase == .active && scrollFollowing.followsBottom && transcriptVisible)
+            if phase != .active { Task { await conversation.store.flushComposerDrafts() } }
+        }
+        .onChange(of: transcriptVisible) { _, visible in
+            updateReadingLatest(visible && scenePhase == .active && scrollFollowing.followsBottom)
+        }
+        .onReceive(WorkshopRuntime.shared.visibilityChanges) { _ in
+            updateReadingLatest(scenePhase == .active && transcriptVisible && scrollFollowing.followsBottom)
+        }
+        .onScrollPhaseChange { _, phase in
+            if phase == .tracking || phase == .interacting { scrollFollowing.interacting(true) }
+            else if phase == .idle { scrollFollowing.interacting(false) }
+        }
+        .onChange(of: conversation.presentation.revision) { _, _ in
+            followRenderedMessages()
+        }
+        .onChange(of: conversation.appendedMessageID) { _, id in
+            if let id {
+                // Sending precedes the asynchronous renderer. Do not scroll the
+                // old lazy layout while the keyboard and operation footer change.
+                scrollFollowing.messageAppended(id)
+                followRenderedMessages()
+            }
+        }
+        .scrollDismissesKeyboard(.interactively)
+        .background(HakoStyle.background)
+        .background(WorkshopKeyboardDismissal())
+        .background(WorkshopPageCaptureHost(capture: pageCapture).frame(width: 0, height: 0))
+    }
+
+    private var collaborationObservationID: String {
+        "\(conversation.threadId ?? ""):\(conversation.operation?.active == true || sidechats.hasRunning):\(scenePhase == .active && transcriptVisible)"
+    }
+
+    private func observeCollaboration() async {
+        guard scenePhase == .active, transcriptVisible else { return }
+        repeat {
+            await sidechats.refreshCollaboration()
+            let operationActive = conversation.operation?.active == true
+            guard operationActive || sidechats.hasRunning else { return }
+            try? await Task.sleep(for: .seconds(5))
+        } while !Task.isCancelled
     }
 
     private func updateReadingLatest(_ visible: Bool) {
@@ -407,7 +495,7 @@ struct WorkshopConversationView: View {
         // the keyboard closes; geometry observation corrects the measured edge.
         var transaction = Transaction(animation: nil)
         transaction.disablesAnimations = true
-        withTransaction(transaction) { scrollPosition.scrollTo(edge: .bottom) }
+        withTransaction(transaction) { scrollPosition.scrollTo(id: latestMessageAnchor, anchor: .bottom) }
     }
 
     @ViewBuilder private func entryView(_ entry: WorkshopEntry) -> some View {
@@ -416,11 +504,7 @@ struct WorkshopConversationView: View {
         } else if entry.role == "user" {
             HStack {
                 Spacer(minLength: 30)
-                VStack(alignment: .trailing, spacing: 5) {
-                    userMessage(entry).padding(14)
-                        .background(HakoStyle.line, in: RoundedRectangle(cornerRadius: 16))
-                    WorkshopMessageMetadata(entry: entry, running: false, showsElapsed: false)
-                }
+                userBubble(entry)
             }
         } else if entry.role == "assistant" {
             let completedTurn = conversation.presentation.turnFooters[entry.id]
@@ -431,40 +515,59 @@ struct WorkshopConversationView: View {
                         WorkshopUserMessage(entry: entry, threadId: conversation.threadId, store: conversation.store, agent: conversation.agent)
                     } else {
                         WorkshopMessageView(text: entry.text, parts: conversation.presentation.messageParts[entry.id] ?? [],
-                            store: conversation.store).equatable()
+                            store: conversation.store, projectPath: conversation.application.path,
+                            agent: conversation.agent, application: conversation.application, threadId: conversation.threadId).equatable()
                             .fixedSize(horizontal: false, vertical: true)
                     }
                     if entry.truncated {
                         Button("查看内容说明") { detail = entry }.font(.caption)
                     }
                 }
-                HStack(spacing: 6) {
-                    if let returnSidechat, completedTurn != nil {
-                        Button { returnSidechat(entry.text) } label: { Label("发回主会话", systemImage: "arrow.up.right") }
-                            .frame(minHeight: 44)
-                    } else if activeSidechatParent != nil, completedTurn != nil {
-                        Button { standaloneSidechatTransfer = .init(text: entry.text) } label: { Label("发回主会话", systemImage: "arrow.up.right") }
-                            .frame(minHeight: 44)
-                    } else if conversation.parentThreadId == nil, conversation.threadId != nil, completedTurn != nil {
-                        Button {
-                            sidechats.create(quote: entry.text)
-                            showingSidechats = true
-                        } label: {
-                            Image(systemName: "bubble.left.and.bubble.right")
-                                .frame(width: 44, height: 44, alignment: .leading)
-                                .contentShape(Rectangle())
+                if let completedTurn {
+                    HStack(spacing: 6) {
+                        if let returnSidechat {
+                            Button { returnSidechat(entry.text) } label: { Label("发回主会话", systemImage: "arrow.up.right") }
+                                .frame(minHeight: 44)
+                        } else if activeSidechatParent != nil {
+                            Button { standaloneSidechatTransfer = .init(text: entry.text) } label: { Label("发回主会话", systemImage: "arrow.up.right") }
+                                .frame(minHeight: 44)
+                        } else if conversation.parentThreadId == nil, conversation.threadId != nil {
+                            Button {
+                                sidechats.create(quote: entry.text)
+                                showingSidechats = true
+                            } label: {
+                                Image(systemName: "bubble.left.and.bubble.right")
+                                    .frame(width: 44, height: 44, alignment: .leading)
+                                    .contentShape(Rectangle())
+                            }
+                            // Keep the 44pt hit area; reserve only 20pt before the timestamp.
+                            .padding(.trailing, -24)
+                            .accessibilityLabel("引用这条回复进入侧聊")
+                            .disabled(entry.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                         }
-                        // Keep the 44pt hit area; reserve only 20pt before the timestamp.
-                        .padding(.trailing, -24)
-                        .accessibilityLabel("引用这条回复进入侧聊")
-                        .disabled(entry.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        WorkshopMessageMetadata(entry: entry, running: false, showsElapsed: true,
+                            completedTurn: completedTurn, alignment: .leading)
+                        Spacer(minLength: 0)
                     }
-                    WorkshopMessageMetadata(entry: entry, running: false, showsElapsed: completedTurn != nil,
-                        completedTurn: completedTurn, alignment: .leading)
-                    Spacer(minLength: 0)
+                    .font(.caption).foregroundStyle(HakoStyle.muted).buttonStyle(.plain)
                 }
-                .font(.caption).foregroundStyle(HakoStyle.muted).buttonStyle(.plain)
             }
+        } else if entry.kind == "subagentGroup" {
+            if let group = inlineAgentGroups.first(where: { $0.anchorID == entry.id }) {
+              WorkshopInlineAgentsView(group: group, model: sidechats,
+                expanded: Binding(get: { !collapsedAgentGroups.contains(group.id) },
+                    set: { if $0 { collapsedAgentGroups.remove(group.id) } else { collapsedAgentGroups.insert(group.id) } }),
+                expandedRows: $expandedAgentRows, floating: false)
+                .onGeometryChange(for: CGFloat.self) { $0.frame(in: .named("workshop-transcript-viewport")).minY } action: {
+                    agentTopPositions[group.id] = $0
+                }
+            }
+        } else if entry.kind == "plan", entry.plan?.isEmpty == false {
+            WorkshopExecutionPlanCard(plan: WorkshopExecutionPlan(entry: entry),
+                expanded: Binding(get: { !collapsedPlanIDs.contains(entry.id) },
+                    set: { if $0 { collapsedPlanIDs.remove(entry.id) } else { collapsedPlanIDs.insert(entry.id) } }), floating: false)
+        } else if entry.kind == "plan", entry.plan != nil {
+            EmptyView()
         } else if entry.kind == "notice" {
             Text(entry.text).font(.footnote).foregroundStyle(HakoStyle.muted).textSelection(.enabled)
         } else {
@@ -503,7 +606,6 @@ struct WorkshopConversationView: View {
                                 }
                             } else {
                                 Button("检查消息结果") { Task { await conversation.checkResult() } }
-                                if pending { Button("重试原消息") { Task { await conversation.retryQueued(entry.id) } } }
                             }
                         } label: {
                             Image(systemName: "ellipsis").font(.caption.weight(.medium))
@@ -512,9 +614,7 @@ struct WorkshopConversationView: View {
                         .accessibilityLabel("排队消息操作").disabled(!conversation.canEditMessages)
                     }
                 }
-                userMessage(entry).padding(14)
-                    .background(HakoStyle.card, in: RoundedRectangle(cornerRadius: 16))
-                    .overlay { RoundedRectangle(cornerRadius: 16).strokeBorder(HakoStyle.line, lineWidth: 1) }
+                userBubble(entry, queued: true)
             }
         }
     }
@@ -532,16 +632,41 @@ struct WorkshopConversationView: View {
         }
     }
 
+    private func userBubble(_ entry: WorkshopEntry, queued: Bool = false) -> some View {
+        HStack(spacing: 4) {
+            if case .failed(let reason) = conversation.outbox.states[entry.id] {
+                Button {
+                    Task { await conversation.retryDelivery(entry.id) }
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.body).frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain).foregroundStyle(.red)
+                .disabled(!conversation.canRetryDelivery(entry.id))
+                .accessibilityLabel("重试这条未发送成功的消息")
+                .accessibilityHint(reason)
+            }
+            userMessage(entry).padding(14)
+                .background(queued ? HakoStyle.card : HakoStyle.line, in: RoundedRectangle(cornerRadius: 16))
+                .overlay {
+                    if queued { RoundedRectangle(cornerRadius: 16).strokeBorder(HakoStyle.line, lineWidth: 1) }
+                }
+        }
+    }
+
     private func userMessage(_ entry: WorkshopEntry) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             WorkshopUserMessage(entry: entry, threadId: conversation.threadId, store: conversation.store, agent: conversation.agent,
                 imageIDs: conversation.followups.first(where: { $0.id == entry.id })?.imageIds ?? [],
                 replies: conversation.presentation.questionReplies[entry.id] ?? [])
             if let delivery = conversation.outbox.states[entry.id] {
-                WorkshopMessageDeliveryView(state: delivery, canRetry: conversation.canRetryDelivery(entry.id),
-                    retry: { Task { await conversation.retryDelivery(entry.id) } },
-                    cancel: { conversation.cancelUpload(entry.id) },
-                    check: { Task { await conversation.checkResult() } })
+                switch delivery {
+                case .waiting, .uploading, .sending:
+                    WorkshopMessageDeliveryView(state: delivery, cancel: { conversation.cancelUpload(entry.id) })
+                case .failed, .unconfirmed:
+                    EmptyView()
+                }
             }
         }
     }
@@ -552,7 +677,7 @@ struct WorkshopConversationView: View {
                 WorkshopProjectConnectionLabel(store: conversation.store, name: conversation.application.name,
                     agentID: conversation.agent.id, scope: conversation.scope,
                     verified: conversation.connectionVerified,
-                    needsRecovery: conversation.needsConnectionRecovery)
+                    needsRecovery: conversation.needsConnectionRecovery, checking: conversation.checkingConnection)
                 Spacer(minLength: 8)
                 HStack(spacing: 8) {
                     if let model = conversation.generation.model, !model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -711,6 +836,64 @@ struct WorkshopConversationView: View {
 
 }
 
+private struct WorkshopExecutionPlanCard: View {
+    let plan: WorkshopExecutionPlan
+    @Binding var expanded: Bool
+    let floating: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button { expanded.toggle() } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "checklist").foregroundStyle(HakoStyle.muted)
+                    Text("执行计划").fontWeight(.medium)
+                    Text("\(plan.completedCount)/\(plan.steps.count)").foregroundStyle(HakoStyle.muted).monospacedDigit()
+                    if floating { Text("· \(plan.summary)").lineLimit(1).truncationMode(.tail) }
+                    Spacer(minLength: 0)
+                    Image(systemName: expanded ? "chevron.down" : "chevron.right").font(.caption2).foregroundStyle(HakoStyle.muted)
+                }
+                .font(.caption).padding(.horizontal, floating ? 20 : 14).frame(minHeight: 44)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityValue("\(plan.completedCount)/\(plan.steps.count)，\(plan.summary)，\(expanded ? "已展开" : "已收起")")
+            if expanded {
+                if floating {
+                    ScrollView { details }.frame(maxHeight: 320).fixedSize(horizontal: false, vertical: true)
+                } else { details }
+            } else if !floating {
+                Text(plan.summary).font(.caption).foregroundStyle(HakoStyle.muted)
+                    .padding(.horizontal, 14).padding(.bottom, 12)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(floating ? HakoStyle.background : HakoStyle.card)
+        .clipShape(RoundedRectangle(cornerRadius: floating ? 0 : 12))
+        .overlay(alignment: .bottom) { if floating { Divider() } }
+        .shadow(color: .black.opacity(floating ? 0.08 : 0), radius: 8, y: 4)
+    }
+
+    private var details: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            if !plan.entry.text.isEmpty {
+                Text(plan.entry.text).font(.caption).foregroundStyle(HakoStyle.muted)
+            }
+            ForEach(Array(plan.steps.enumerated()), id: \.offset) { _, step in
+                HStack(alignment: .top, spacing: 10) {
+                    Image(systemName: step.status == "completed" ? "checkmark" : step.status == "inProgress" ? "circle.dotted" : "circle")
+                        .foregroundStyle(step.status == "completed" ? Color.green : HakoStyle.muted)
+                        .frame(width: 16)
+                    Text(step.step).frame(maxWidth: .infinity, alignment: .leading)
+                    Text(step.status == "completed" ? "已完成" : step.status == "inProgress" ? "进行中" : "待开始")
+                        .font(.caption2).foregroundStyle(HakoStyle.muted)
+                }
+                .font(.caption)
+            }
+        }
+        .padding(.horizontal, floating ? 20 : 14).padding(.top, 4).padding(.bottom, 14)
+    }
+}
+
 private struct WorkshopMessageMetadata: View {
     let entry: WorkshopEntry
     let running: Bool
@@ -790,12 +973,13 @@ private struct WorkshopProjectConnectionLabel: View {
     let scope: String
     let verified: Bool
     let needsRecovery: Bool
+    let checking: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var state: WorkshopConnectionState {
         guard store.authenticated, scope == store.scope else { return .disconnected }
         return (store.connections[agentID] ?? .disconnected)
-            .forConversation(verified: verified, needsRecovery: needsRecovery)
+            .forConversation(verified: verified, needsRecovery: needsRecovery, checking: checking)
     }
 
     private var connectedColor: Color { HakoStyle.adaptive(0x16803c, 0x6edb91) }
@@ -841,11 +1025,6 @@ private struct WorkshopSynchronizationHint: View {
                     .foregroundStyle(HakoStyle.link)
                     .disabled(conversation.busy || conversation.synchronizing)
                     .accessibilityLabel("重新同步会话与任务状态")
-                }
-                if conversation.canRetry {
-                    Button("重试原消息") { Task { await conversation.retryOriginal() } }
-                        .foregroundStyle(HakoStyle.link)
-                        .disabled(conversation.busy)
                 }
             }
             .font(.caption)
@@ -897,7 +1076,9 @@ private struct WorkshopComposerView: View {
                 .disabled(!conversation.canCompose || conversation.editingMessageID != nil || loadingPhoto || conversation.photos.count >= 3)
                 ZStack(alignment: .topLeading) {
                     if input.text.isEmpty {
-                        Text("描述你的想法…").font(.body).foregroundStyle(Color(uiColor: .placeholderText))
+                        Text(conversation.composerPrediction?.text ?? "描述你的想法…")
+                            .font(.body)
+                            .foregroundStyle(conversation.composerPrediction == nil ? Color(uiColor: .placeholderText) : HakoStyle.muted)
                             .padding(.vertical, 11).allowsHitTesting(false).accessibilityHidden(true)
                     }
                     WorkshopComposerTextEditor(input: input, snapshot: input.snapshot)
@@ -912,6 +1093,13 @@ private struct WorkshopComposerView: View {
                     .buttonStyle(WorkshopSendButtonStyle())
                     .accessibilityLabel(conversation.restoringCache || conversation.synchronizing ? "正在同步会话，等待发送" : "正在确认任务状态，等待发送")
                     .disabled(true)
+                } else if let prediction = conversation.composerPrediction, input.text.isEmpty, !loadingPhoto {
+                    Button { conversation.acceptComposerPrediction() } label: {
+                        Image(systemName: "arrow.left").font(.system(size: 18, weight: .semibold))
+                    }
+                    .buttonStyle(WorkshopSendButtonStyle())
+                    .accessibilityLabel("采纳建议：\(prediction.text)")
+                    .accessibilityHint("填入草稿，编辑后可发送")
                 } else if conversation.operation?.active == true && !conversation.hasDraftInput && conversation.editingMessageID == nil {
                     Button { Task { await conversation.stop() } } label: {
                         Image(systemName: "square.fill").font(.system(size: 13, weight: .semibold))

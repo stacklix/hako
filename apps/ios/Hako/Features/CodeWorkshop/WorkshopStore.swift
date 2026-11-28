@@ -12,20 +12,25 @@ import CryptoKit
     func localEndpoint(for agentID: String) -> LocalNetworkEndpoint? { localEndpoints[agentID] }
     var networkNamespace: String { authentication.serverURL + "\n" + authentication.username }
     let routeChanges = PassthroughSubject<Void, Never>()
+    let sessionArchived = PassthroughSubject<(scope: String, agentID: String, threadID: String), Never>()
     private var networkCheck = UUID()
     private var transportRevision = UUID()
     private var connectionPersistent = false
     private var subscription: AnyCancellable?
     private var context = ""
+    private var contextLoad: Task<Void, Never>?
+    private var contextLoadID = UUID()
     private var preferences = WorkshopPreferences()
     @Published private var cachedCatalogs: [String: WorkshopCachedCatalog] = [:]
     private var savedListSnapshot: WorkshopListSnapshot?
     private var savedPreferences: WorkshopPreferences?
     private let quotaCache = WorkshopQuotaCache()
+    private lazy var usageSocket = AgentRequestSocket(authentication: authentication, logSource: .codeWorkshop)
     @Published private(set) var agents: [WorkshopAgent] = []
     @Published private(set) var applications: [WorkshopApplication] = []
     @Published private(set) var sessions: [WorkshopSession] = []
     @Published private(set) var loading = false
+    @Published private(set) var restoringLocalState = false
     @Published private(set) var loadingMore = false
     @Published private(set) var showingArchived = false
     @Published private(set) var archivingSessionID: String?
@@ -50,10 +55,18 @@ import CryptoKit
     private var queuedSends: [WorkshopQueuedSend] = []
     private let draftWriter = WorkshopDraftWriter()
     private var draftCache: [URL: WorkshopComposerDraft] = [:]
+    private var draftLoads: [URL: Task<Void, Never>] = [:]
+    private var draftFailures = Set<URL>()
     private var diagnosticUpload: Task<Void, Never>?
     private var computersLoaded = false
     private var computerDiscoveryID = UUID()
     private var artifactCache: [String: (Data, String)] = [:]
+    private var projectImageCache: [String: (Data, String)] = [:]
+    private var archivedImageDirectories: Set<URL> = []
+    private var imageCacheGenerations: [URL: UUID] = [:]
+    private let projectImageDisk = WorkshopProjectImageDisk(hash: { bytes in
+        SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+    })
 
     init(authentication: (any AuthenticatedServerAccess)? = nil) {
         let authentication = authentication ?? AuthenticatedServerService.shared
@@ -78,6 +91,7 @@ import CryptoKit
     }
 
     func loadComputers() async {
+        await prepareLocalState()
         guard !computersLoaded, authentication.authenticated, !authentication.logoutPending else { return }
         computersLoaded = true
         let ticket = scope
@@ -85,7 +99,7 @@ import CryptoKit
         do {
             let computers = try await cloudComputers()
             guard !Task.isCancelled, ticket == scope, visit == computerDiscoveryID else { return }
-            try stateDisk.write(computers, to: computerCatalogFile)
+            scheduleState(computers, to: computerCatalogFile)
             agents = computers
             if selectedAgent == nil {
                 selectedAgentID = ""
@@ -124,6 +138,7 @@ import CryptoKit
     }
 
     func prepareNetwork() async {
+        await prepareLocalState()
         let check = UUID(); networkCheck = check
         let ticket = scope
         let candidates = await configuredLocalEndpoints()
@@ -483,11 +498,12 @@ import CryptoKit
         guard context == scope else { return nil }
         let ticket = scope
         let snapshot = await transcriptDisk.read(transcriptFile(key), key: key)
-        return ticket == scope ? snapshot : nil
+        return ticket == scope && !archivedImageDirectories.contains(sessionImageDirectory(agentID: key.agentId, threadID: key.threadId)) ? snapshot : nil
     }
 
     func saveTranscript(_ snapshot: WorkshopTranscript, scope ticket: String) {
         guard context == ticket, scope == ticket else { return }
+        guard !archivedImageDirectories.contains(sessionImageDirectory(agentID: snapshot.key.agentId, threadID: snapshot.key.threadId)) else { return }
         transcriptDisk.write(snapshot, to: transcriptFile(snapshot.key))
     }
 
@@ -514,7 +530,26 @@ import CryptoKit
     func hasDraft(_ session: WorkshopSession, agent: WorkshopAgent, application: WorkshopApplication) -> Bool {
         _ = draftRevision
         guard context == scope else { return false }
-        return (try? composerDraft(agent: agent, application: application, sessionId: session.id))?.hasUnsentInput == true
+        let file = draftFile(agent: agent, application: application, sessionId: session.id)
+        if let draft = draftCache[file] { return draft.hasUnsentInput }
+        // This method is used while building the SwiftUI List. Only publish a
+        // marker after the background read; never perform filesystem I/O here.
+        if draftLoads[file] == nil, !draftFailures.contains(file) {
+            let ticket = scope, loadID = contextLoadID
+            draftLoads[file] = Task { [weak self] in
+                let result = await Task.detached(priority: .utility) { Result { try WorkshopDraftDisk.read(file) } }.value
+                guard let self, self.scope == ticket, self.contextLoadID == loadID else { return }
+                self.draftLoads[file] = nil
+                guard self.draftCache[file] == nil else { return } // An edit/open won the race.
+                switch result {
+                case .success(let saved):
+                    self.draftCache[file] = saved ?? WorkshopComposerDraft(input: WorkshopDraftInput(text: "", imageIds: []))
+                    if saved?.hasUnsentInput == true { self.draftRevision += 1 }
+                case .failure: self.draftFailures.insert(file) // Opening still reports the actual read error.
+                }
+            }
+        }
+        return false
     }
 
     func saveComposerDraft(_ draft: WorkshopComposerDraft, agent: WorkshopAgent, application: WorkshopApplication,
@@ -561,6 +596,12 @@ import CryptoKit
     private func prepareContext() {
         guard context != scope else { return }
         context = scope
+        restoringLocalState = true
+        contextLoad?.cancel()
+        contextLoadID = UUID()
+        draftLoads.values.forEach { $0.cancel() }; draftLoads.removeAll()
+        draftCache.removeAll(); draftFailures.removeAll()
+        usageSocket.resetIfContextChanged()
         refreshing = false
         savedPreferences = nil; savedListSnapshot = nil
         quotaCache.reset()
@@ -568,41 +609,55 @@ import CryptoKit
         activityChecks.removeAll()
         catalogChecks.removeAll(); beginVisit()
         artifactCache.removeAll()
+        projectImageCache.removeAll()
+        archivedImageDirectories.removeAll(); imageCacheGenerations.removeAll()
         connections.removeAll()
         localEndpoints = [:]; localCandidates = [:]
         directSockets.values.forEach { $0.close() }; directSockets.removeAll()
         cloudSockets.values.forEach { $0.close() }; cloudSockets.removeAll()
-        preferences = (try? stateDisk.read(WorkshopPreferences.self, from: cacheFile)) ?? WorkshopPreferences()
-        savedPreferences = preferences
-        queuedSends = (try? stateDisk.read([WorkshopQueuedSend].self, from: queueFile)) ?? []
+        preferences = WorkshopPreferences()
+        queuedSends = []
         localSessions = WorkshopLocalSessions()
-        for receipt in preferences.receipts where receipt.state == "pending" && receipt.parentThreadId == nil { localSessions.record(receipt, isNew: true) }
-        readState = (try? stateDisk.read(WorkshopReadState.self, from: readStateFile)) ?? WorkshopReadState()
-        selectedAgentID = preferences.agentId
-        selectedApplicationID = preferences.applicationId
+        readState = WorkshopReadState()
+        selectedAgentID = ""
+        selectedApplicationID = ""
         agents = []; applications = []; sessions = []; cursor = nil; error = nil; loading = false
         showingArchived = false; archivingSessionID = nil
         cachedCatalogs = [:]; cachedAt = nil
         systemPrompt = WorkshopSystemPrompt.defaultText
         systemPromptLoadError = nil
-        if FileManager.default.fileExists(atPath: systemPromptFile.path) {
-            do {
-                let text = try String(contentsOf: systemPromptFile, encoding: .utf8)
-                guard WorkshopSystemPrompt.valid(text) else { throw CocoaError(.coderReadCorrupt) }
-                systemPrompt = text
-            } catch { systemPromptLoadError = "无法读取已保存的系统提示词，请在代码工坊设置中检查后重新保存。" }
+        let ticket = scope, loadID = contextLoadID, file = cacheFile, disk = stateDisk
+        contextLoad = Task { [weak self] in
+            let restored = await WorkshopRestoredState.load(at: file, disk: disk)
+            guard let self, !Task.isCancelled, self.context == ticket, self.scope == ticket,
+                  self.contextLoadID == loadID else { return }
+            self.preferences = restored.preferences
+            self.savedPreferences = restored.preferences
+            self.queuedSends = restored.queuedSends
+            for receipt in restored.preferences.receipts where receipt.state == "pending" && receipt.parentThreadId == nil {
+                self.localSessions.record(receipt, isNew: true)
+            }
+            self.readState = restored.readState
+            self.selectedAgentID = restored.preferences.agentId
+            self.selectedApplicationID = restored.preferences.applicationId
+            self.systemPrompt = restored.systemPrompt
+            self.systemPromptLoadError = restored.systemPromptIssue
+            self.savedListSnapshot = restored.lists
+            self.cachedCatalogs = restored.lists?.catalogs ?? [:]
+            self.agents = (restored.computers ?? restored.lists?.agents ?? []).map {
+                WorkshopAgent(id: $0.id, name: $0.name, online: false, protocolVersion: $0.protocolVersion, lan: $0.lan)
+            }
+            self.showCachedCatalog()
+            self.contextLoad = nil
+            self.restoringLocalState = false
         }
-        if let snapshot = try? stateDisk.read(WorkshopListSnapshot.self, from: listCacheFile) {
-            savedListSnapshot = snapshot
-            cachedCatalogs = snapshot.catalogs
-            // A saved list is available immediately, but cannot establish live connectivity.
-            agents = snapshot.agents.map { WorkshopAgent(id: $0.id, name: $0.name, online: false,
-                protocolVersion: $0.protocolVersion, lan: $0.lan) }
-            showCachedCatalog()
-        }
-        if let computers = try? stateDisk.read([WorkshopAgent].self, from: computerCatalogFile) {
-            agents = computers.map { WorkshopAgent(id: $0.id, name: $0.name, online: false, protocolVersion: $0.protocolVersion, lan: $0.lan) }
-            showCachedCatalog()
+    }
+
+    private func prepareLocalState() async {
+        prepareContext()
+        while let load = contextLoad {
+            await load.value
+            prepareContext()
         }
     }
 
@@ -674,7 +729,7 @@ import CryptoKit
 
     func selectApplication(_ id: String) {
         selectedApplicationID = id
-        do { try persist() } catch { self.error = "无法保存应用选择。" }
+        do { try persist(background: true) } catch { self.error = "无法保存应用选择。" }
     }
 
     func selectArchiveMode(_ archived: Bool) async {
@@ -705,14 +760,27 @@ import CryptoKit
                 error = "归档结果与请求不一致，请刷新列表核对。"
                 return false
             }
+            var cleanupIssue: String?
+            if archived {
+                do { try await clearArchivedSessionCache(threadID: threadId, agentID: agent.id) }
+                catch { cleanupIssue = "会话已归档，但部分手机缓存清理失败：\(error.localizedDescription)" }
+            } else {
+                let directory = sessionImageDirectory(agentID: agent.id, threadID: threadId)
+                archivedImageDirectories.remove(directory); imageCacheGenerations[directory] = UUID()
+                let key = WorkshopTranscriptKey(agentId: agent.id, applicationId: "", threadId: threadId)
+                transcriptDisk.allow(key, in: transcriptFile(key).deletingLastPathComponent())
+                await projectImageDisk.allow(directory)
+            }
+            guard ticket == scope else { return true }
             localSessions.remove(threadId: threadId, agentId: agent.id)
             if selectedAgentID == agent.id {
                 sessions.removeAll { $0.id == threadId }
                 cachedCatalogs[catalogKey(agent.id, archived: archived)] = nil
-                try? saveLists()
+                try? saveLists(background: true)
                 archivingSessionID = nil
                 await refresh()
             }
+            if let cleanupIssue { error = cleanupIssue }
             return true
         } catch is CancellationError { return false }
         catch let failure as WorkshopFailure {
@@ -725,6 +793,50 @@ import CryptoKit
         }
     }
 
+    private func clearArchivedSessionCache(threadID: String, agentID: String) async throws {
+        var failures: [Error] = []
+        let directory = sessionImageDirectory(agentID: agentID, threadID: threadID)
+        let snapshotDirectory = transcriptFile(WorkshopTranscriptKey(agentId: agentID, applicationId: "", threadId: threadID)).deletingLastPathComponent()
+        let accountFile = cacheFile
+        let oldProjectDirectory = sessionImageRoot.deletingLastPathComponent().appendingPathComponent("project-images", isDirectory: true)
+        var appPaths: [String: String] = [:]
+        for app in applications + cachedCatalogs.values.flatMap({ $0.catalog.applications }) { appPaths[app.id] = app.path }
+        markSessionCacheArchived(agentID: agentID, threadID: threadID)
+        sessionArchived.send((scope: scope, agentID: agentID, threadID: threadID))
+        projectImageCache = projectImageCache.filter { !$0.key.hasPrefix(directory.path + "/") }
+        artifactCache = artifactCache.filter { !$0.key.hasPrefix(agentID + ":" + threadID + ":") }
+        let removedReceipts = preferences.receipts.filter { $0.agentId == agentID && $0.threadId == threadID && !["pending", "unknown"].contains($0.state) }
+        let removedIDs = Set(removedReceipts.map(\.id))
+        preferences.receipts.removeAll { removedIDs.contains($0.id) && $0.agentId == agentID }
+        do { try persist() } catch { failures.append(error) }
+        let uploads = removedReceipts.flatMap { $0.imageIds ?? [] }.compactMap { try? imageFile($0) }
+        var protected = Set(preferences.receipts.flatMap { $0.imageIds ?? [] } + queuedSends.flatMap(\.imageIds))
+        for draft in draftCache.values {
+            protected.formUnion(draft.input.imageIds); protected.formUnion(draft.originalInput?.imageIds ?? [])
+        }
+        // Block image writes before deleting the directory; downloads holding old tickets cannot recreate it.
+        do { try await projectImageDisk.removeSession(directory) } catch { failures.append(error) }
+        var removal = WorkshopTranscriptDisk.Removal(removed: [], retained: [])
+        do { removal = try await transcriptDisk.removeSession(agentID: agentID, threadID: threadID, in: snapshotDirectory) }
+        catch { failures.append(error) }
+        await draftWriter.flush()
+        let retainedImages = protected
+        let snapshots = removal
+        let applicationPaths = appPaths
+        do {
+            try await Task.detached(priority: .utility) {
+                let digest: (Data) -> String = { SHA256.hash(data: $0).map { String(format: "%02x", $0) }.joined() }
+                let removedFiles = WorkshopArchivedImageCleanup.previousFiles(snapshots.removed, accountFile: accountFile,
+                    projectDirectory: oldProjectDirectory, applications: applicationPaths, hash: digest)
+                let sharedFiles = WorkshopArchivedImageCleanup.previousFiles(snapshots.retained, accountFile: accountFile,
+                    projectDirectory: oldProjectDirectory, applications: applicationPaths, hash: digest)
+                try WorkshopArchivedImageCleanup.remove(attachments: Array(removedFiles.subtracting(sharedFiles)), uploads: uploads,
+                    protecting: retainedImages, draftDirectory: snapshotDirectory)
+            }.value
+        } catch { failures.append(error) }
+        if let first = failures.first { throw first }
+    }
+
     func selectAgent(_ id: String) async {
         guard id != selectedAgentID, agents.contains(where: { $0.id == id }) else { return }
         catalogRevision = UUID(); refreshing = false; loading = false
@@ -732,7 +844,7 @@ import CryptoKit
         showingArchived = false
         showCachedCatalog()
         preferences.order = []; preferences.seenSessions = []
-        do { try persist() } catch { self.error = "无法保存电脑选择。" }
+        do { try persist(background: true) } catch { self.error = "无法保存电脑选择。" }
         await refresh()
     }
 
@@ -1021,57 +1133,119 @@ import CryptoKit
         return photos
     }
 
+    struct ImageCacheTicket {
+        let directory: URL
+        let generation: UUID
+        let scope: String
+    }
+
+    private var sessionImageRoot: URL {
+        FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("CodeWorkshop/session-images", isDirectory: true)
+    }
+    private func sessionImageDirectory(agentID: String, threadID: String) -> URL {
+        let identity = try! JSONEncoder().encode([cacheFile.deletingPathExtension().lastPathComponent, agentID, threadID.lowercased()])
+        let hash = SHA256.hash(data: identity).map { String(format: "%02x", $0) }.joined()
+        return sessionImageRoot.appendingPathComponent(hash, isDirectory: true)
+    }
+    func imageCacheTicket(agentID: String?, threadID: String?) -> ImageCacheTicket? {
+        guard let agentID, let threadID, UUID(uuidString: threadID) != nil else { return nil }
+        let directory = sessionImageDirectory(agentID: agentID, threadID: threadID)
+        guard !archivedImageDirectories.contains(directory) else { return nil }
+        if imageCacheGenerations[directory] == nil { imageCacheGenerations[directory] = UUID() }
+        return ImageCacheTicket(directory: directory, generation: imageCacheGenerations[directory]!, scope: scope)
+    }
+    private func permitsImageCache(_ ticket: ImageCacheTicket) -> Bool {
+        ticket.scope == scope && !archivedImageDirectories.contains(ticket.directory) && imageCacheGenerations[ticket.directory] == ticket.generation
+    }
+    private func sessionImageFile(_ ticket: ImageCacheTicket, kind: String, identity: [String]) -> URL {
+        let key = SHA256.hash(data: try! JSONEncoder().encode(identity)).map { String(format: "%02x", $0) }.joined()
+        return ticket.directory.appendingPathComponent(kind + "-" + key + ".image")
+    }
+    func markSessionCacheArchived(agentID: String, threadID: String) {
+        let directory = sessionImageDirectory(agentID: agentID, threadID: threadID)
+        archivedImageDirectories.insert(directory)
+        imageCacheGenerations[directory] = UUID()
+    }
+
+    func projectImage(path: String, application: WorkshopApplication, agent: WorkshopAgent, threadId: String?) async throws -> Data {
+        let scopeTicket = scope
+        let ticket = imageCacheTicket(agentID: agent.id, threadID: threadId)
+        let file = ticket.map { sessionImageFile($0, kind: "project", identity: [application.id, application.path, path]) }
+        let cached: (Data, String)?
+        if let file, let memory = projectImageCache[file.path] { cached = memory }
+        else if let file { cached = await projectImageDisk.read(file) }
+        else { cached = nil }
+        try Task.checkCancellation()
+        guard scopeTicket == scope else { throw CancellationError() }
+        let (bytes, revision) = try await WorkshopDownloadTransfer.read(id: path, maximum: WorkshopProjectImage.limit,
+            cached: cached) { offset, revision in
+            var params: [String: Any] = ["applicationId": application.id, "path": path, "offset": offset]
+            params["revision"] = revision
+            return try await self.call(agent, "files.image.read", params)
+        }
+        let hash = await Task.detached(priority: .userInitiated) {
+            SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+        }.value
+        guard !bytes.isEmpty, hash == revision else { throw CocoaError(.coderReadCorrupt) }
+        try Task.checkCancellation()
+        guard scopeTicket == scope else { throw CancellationError() }
+        if let ticket, let file {
+            guard permitsImageCache(ticket) else { throw CancellationError() }
+            projectImageCache[file.path] = nil
+            while !projectImageCache.isEmpty && (projectImageCache.count >= 4 ||
+                projectImageCache.values.reduce(0, { $0 + $1.0.count }) + bytes.count > 24 * 1024 * 1024) {
+                projectImageCache[projectImageCache.keys.first!] = nil
+            }
+            projectImageCache[file.path] = (bytes, revision)
+            var onDisk = false
+            if cached?.1 == revision { onDisk = await projectImageDisk.touch(file) }
+            if !onDisk, permitsImageCache(ticket) {
+                try? await projectImageDisk.write(bytes, revision: revision, to: file, budgetDirectory: sessionImageRoot)
+            }
+            guard permitsImageCache(ticket) else { throw CancellationError() }
+        }
+        return bytes
+    }
+
     func messageImage(threadId: String, messageId: String, index: Int, agent: WorkshopAgent) async throws -> Data {
-        let ticket = scope
-        let identity = "\(agent.id)\n\(threadId)\n\(messageId)\n\(index)"
-        let key = SHA256.hash(data: Data(identity.utf8)).map { String(format: "%02x", $0) }.joined()
-        var directory = cacheFile.deletingPathExtension().appendingPathExtension("images")
-        let cached = directory.appendingPathComponent(key + ".image")
-        if let data = try? Data(contentsOf: cached), !data.isEmpty, data.count <= 8 * 1024 * 1024 { return data }
+        let scopeTicket = scope
+        let ticket = imageCacheTicket(agentID: agent.id, threadID: threadId)
+        let file = ticket.map { sessionImageFile($0, kind: "message", identity: [messageId, String(index)]) }
+        if let ticket, let file, let cached = await projectImageDisk.read(file), permitsImageCache(ticket) { return cached.0 }
         let (bytes, revision) = try await WorkshopDownloadTransfer.read(id: messageId, maximum: 8 * 1024 * 1024) { offset, revision in
             var params: [String: Any] = ["threadId": threadId, "messageId": messageId, "index": index, "offset": offset]
             params["revision"] = revision
             return try await self.call(agent, "image.read", params)
         }
-        let hash = SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+        let hash = await Task.detached(priority: .userInitiated) {
+            SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+        }.value
         guard !bytes.isEmpty, hash == revision else { throw CocoaError(.coderReadCorrupt) }
-        guard ticket == scope else { throw CancellationError() }
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        #if os(iOS)
-        try bytes.write(to: cached, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
-        #else
-        try bytes.write(to: cached, options: .atomic)
-        #endif
-        var flags = URLResourceValues(); flags.isExcludedFromBackup = true
-        try directory.setResourceValues(flags)
+        guard scopeTicket == scope else { throw CancellationError() }
+        if let ticket, let file {
+            guard permitsImageCache(ticket) else { throw CancellationError() }
+            try? await projectImageDisk.write(bytes, revision: revision, to: file, budgetDirectory: sessionImageRoot)
+            guard permitsImageCache(ticket) else { throw CancellationError() }
+        }
         return bytes
     }
 
-    private func remoteImageFile(_ url: URL) -> URL {
-        let key = SHA256.hash(data: Data(url.absoluteString.utf8)).map { String(format: "%02x", $0) }.joined()
-        return cacheFile.deletingPathExtension().appendingPathExtension("remote-images")
-            .appendingPathComponent(key + ".image")
+    func cachedRemoteImage(_ url: URL, ticket: ImageCacheTicket?) async -> Data? {
+        guard let ticket, permitsImageCache(ticket) else { return nil }
+        let file = sessionImageFile(ticket, kind: "remote", identity: [url.absoluteString])
+        let cached = await projectImageDisk.read(file)
+        return permitsImageCache(ticket) ? cached?.0 : nil
     }
 
-    func cachedRemoteImage(_ url: URL) -> Data? {
-        guard context == scope, let data = try? Data(contentsOf: remoteImageFile(url)),
-              !data.isEmpty, data.count <= 8 * 1024 * 1024 else { return nil }
-        return data
-    }
-
-    func cacheRemoteImage(_ data: Data, from url: URL) throws {
-        guard context == scope else { throw CancellationError() }
-        guard !data.isEmpty, data.count <= 8 * 1024 * 1024 else { throw HakoError(message: "图片为空或超过 8 MB，无法缓存。") }
-        let file = remoteImageFile(url)
-        var directory = file.deletingLastPathComponent()
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        #if os(iOS)
-        try data.write(to: file, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
-        #else
-        try data.write(to: file, options: .atomic)
-        #endif
-        var flags = URLResourceValues(); flags.isExcludedFromBackup = true
-        try directory.setResourceValues(flags)
+    func cacheRemoteImage(_ bytes: Data, from url: URL, ticket: ImageCacheTicket?) async {
+        guard let ticket, permitsImageCache(ticket), !bytes.isEmpty, bytes.count <= 8 * 1024 * 1024 else { return }
+        let revision = await Task.detached(priority: .utility) {
+            SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+        }.value
+        guard permitsImageCache(ticket) else { return }
+        let file = sessionImageFile(ticket, kind: "remote", identity: [url.absoluteString])
+        try? await projectImageDisk.write(bytes, revision: revision, to: file, budgetDirectory: sessionImageRoot)
     }
 
     func uploadImages(_ ids: [String], agent: WorkshopAgent, progress: (Double) -> Void) async throws {
@@ -1127,6 +1301,19 @@ import CryptoKit
                 connections[agent.id] = (connections[agent.id] ?? .disconnected).afterFailure(error)
             }
             throw error
+        }
+    }
+
+    func codexUsage(_ agent: WorkshopAgent) async throws -> WorkshopUsageSnapshot {
+        let ticket = scope
+        let data = try await usageSocket.send("request", agentID: agent.id,
+            body: ["method": "query.codex.usage", "version": 1, "params": [String: Any]()])
+        guard ticket == scope else { throw CancellationError() }
+        switch try JSONDecoder().decode(ConsoleAgentReply<WorkshopUsageSnapshot>.self, from: data) {
+        case .failure(let error): throw error
+        case .result(let usage):
+            guard usage.isValid else { throw HakoError(message: "电脑返回的用量统计格式无效。") }
+            return usage
         }
     }
 

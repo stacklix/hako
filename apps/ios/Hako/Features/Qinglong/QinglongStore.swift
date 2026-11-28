@@ -166,10 +166,9 @@ enum QinglongCredentials {
         return success ? result : nil
     }
     func saveRecord(_ resource: QinglongResource, item: QinglongItem?, fields: [String: String]) async -> Bool {
-        var body = item?.editPayload(fields) ?? .fields(fields)
-        if resource == .envs && item == nil { body = .array([body]) }
-        let payload = body
         return await perform(resource, success: "已保存。") {
+            var payload = resource == .subscriptions ? try QinglongSubscription.payload(fields, item: item) : item?.editPayload(fields) ?? .fields(fields)
+            if resource == .envs && item == nil { payload = .array([payload]) }
             _ = try await $0.call([resource.rawValue], method: item == nil ? "POST" : "PUT", body: payload)
         }
     }

@@ -59,9 +59,24 @@ struct QinglongRecordFields: View {
             field(resource == .envs ? "变量名" : "订阅名称", "name")
             if resource == .envs { field("变量值", "value"); field("备注", "remarks") }
             if resource == .subscriptions {
-            field("仓库地址", "url"); field("别名", "alias")
+            if fields["type"] == QinglongSubscription.privateRepository {
+                LabeledContent("订阅类型", value: "私有仓库")
+            } else {
+                Picker("订阅类型", selection: Binding(get: { fields["type"] ?? QinglongSubscription.repository }, set: { fields["type"] = $0 })) {
+                    Text("仓库").tag(QinglongSubscription.repository)
+                    Text("单文件").tag(QinglongSubscription.file)
+                }.accessibilityLabel("订阅类型")
+            }
+            field(fields["type"] == QinglongSubscription.file ? "文件地址（Raw）" : "仓库地址", "url")
+            if fields["type"] == QinglongSubscription.file {
+                Text("填写可直接下载脚本内容的 HTTP 或 HTTPS 地址。GitHub 文件请使用 Raw 地址。")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
+            field("别名", "alias")
             if showsSchedule { field("Cron 表达式", "schedule") }
-            DisclosureGroup("更多选项") { field("分支", "branch"); field("包含关键词", "whitelist"); field("排除关键词", "blacklist") }
+            if fields["type"] != QinglongSubscription.file {
+                DisclosureGroup("更多选项") { field("分支", "branch"); field("包含关键词", "whitelist"); field("排除关键词", "blacklist") }
+            }
             }
         }
         if resource == .envs { Section { Toggle("启用此变量", isOn: $enabled).font(.subheadline) } }

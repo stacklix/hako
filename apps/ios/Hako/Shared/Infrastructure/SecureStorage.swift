@@ -21,7 +21,23 @@ struct SecretStorageError: Error, LocalizedError, CustomNSError {
 
 // A service namespace scopes every operation, including enumeration and deletion.
 enum SecureStorage {
-    fileprivate static let operationLock = NSRecursiveLock()
+    // Only operations in the same service can conflict. A slow iCloud migration
+    // must not hold up the device-bound Console identity/session on the UI thread.
+    private final class ServiceLocks: @unchecked Sendable {
+        private let registryLock = NSLock()
+        private var locks: [String: NSRecursiveLock] = [:]
+
+        func lock(for service: String) -> NSRecursiveLock {
+            registryLock.lock()
+            defer { registryLock.unlock() }
+            if let lock = locks[service] { return lock }
+            let lock = NSRecursiveLock()
+            locks[service] = lock
+            return lock
+        }
+    }
+    private static let serviceLocks = ServiceLocks()
+    fileprivate static func operationLock(for service: String) -> NSRecursiveLock { serviceLocks.lock(for: service) }
     static func namespace(_ service: String) -> any SecretStorage { KeychainStorage(service: service) }
     static func namespace(_ service: String, operations: any KeychainOperations) -> any SecretStorage {
         KeychainStorage(service: service, operations: operations)
@@ -31,7 +47,8 @@ enum SecureStorage {
     static let synchronizedServices: Set<String> = [
         "me.stackli.hako.github", "me.stackli.hako.language-model", "me.stackli.hako.headplane",
         "me.stackli.hako.qinglong", "me.stackli.hako.arcane", "me.stackli.hako.ecs",
-        "me.stackli.hako.devices.ssh", "me.stackli.hako.investment", "me.stackli.hako.commands", "me.stackli.hako.crypto"
+        "me.stackli.hako.devices.ssh", "me.stackli.hako.investment", "me.stackli.hako.commands", "me.stackli.hako.crypto",
+        "me.stackli.hako.financial-tokens"
     ]
 
     struct CloudPreparation: Sendable {
@@ -90,8 +107,9 @@ private struct KeychainStorage: SecretStorage {
         return value
     }
     func read(account: String) throws -> Data? {
-        SecureStorage.operationLock.lock()
-        defer { SecureStorage.operationLock.unlock() }
+        let lock = SecureStorage.operationLock(for: service)
+        lock.lock()
+        defer { lock.unlock() }
         if synchronized, let data = try readData(query(account, cloud: true)) { return data }
         return try readData(query(account))
     }
@@ -104,8 +122,9 @@ private struct KeychainStorage: SecretStorage {
         return data
     }
     func save(_ data: Data, account: String, accessibility: SecretAccessibility) throws {
-        SecureStorage.operationLock.lock()
-        defer { SecureStorage.operationLock.unlock() }
+        let lock = SecureStorage.operationLock(for: service)
+        lock.lock()
+        defer { lock.unlock() }
         let attributes: [String: Any] = [kSecValueData as String: data,
             kSecAttrAccessible as String: protection(accessibility)]
         let lookup = query(account, cloud: synchronized)
@@ -116,15 +135,17 @@ private struct KeychainStorage: SecretStorage {
         if synchronized { _ = operations.delete(query(account)) }
     }
     func delete(account: String) throws {
-        SecureStorage.operationLock.lock()
-        defer { SecureStorage.operationLock.unlock() }
+        let lock = SecureStorage.operationLock(for: service)
+        lock.lock()
+        defer { lock.unlock() }
         // Delete both generations so a removed cloud item cannot resurrect from an old local copy.
         let status = operations.delete(query(account, any: synchronized))
         guard status == errSecSuccess || status == errSecItemNotFound else { throw SecretStorageError(status: status) }
     }
     func accounts() throws -> [String] {
-        SecureStorage.operationLock.lock()
-        defer { SecureStorage.operationLock.unlock() }
+        let lock = SecureStorage.operationLock(for: service)
+        lock.lock()
+        defer { lock.unlock() }
         var lookup = query(any: synchronized)
         lookup[kSecReturnAttributes as String] = true
         lookup[kSecMatchLimit as String] = kSecMatchLimitAll
@@ -140,8 +161,9 @@ private struct KeychainStorage: SecretStorage {
     }
 
     func migrateLocalItems() throws -> Int {
-        SecureStorage.operationLock.lock()
-        defer { SecureStorage.operationLock.unlock() }
+        let lock = SecureStorage.operationLock(for: service)
+        lock.lock()
+        defer { lock.unlock() }
         guard synchronized else { return 0 }
         var lookup = query()
         lookup[kSecReturnAttributes as String] = true

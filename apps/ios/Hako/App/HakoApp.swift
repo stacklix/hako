@@ -6,8 +6,8 @@ import SwiftUI
     @AppStorage(HakoAppearance.storageKey) private var appearance = HakoAppearance.system
 
     init() {
-        HakoApplications.registerBackupScopes(in: HakoCloudSettings.shared)
-        HakoCloudSettings.shared.start()
+        HakoHangDiagnostics.shared.start()
+        HakoTokens.configure(declarations: HakoApplications.credentialDeclarations)
         LocalNetworkService.shared = AppNetworkService.shared
         RemoteNotificationRegistration.prepare = { try await BuildPushSubscription.shared.prepareHakoRegistration() }
     }
@@ -17,8 +17,14 @@ import SwiftUI
             HomeView()
                 .preferredColorScheme(appearance.colorScheme)
                 .onChange(of: scenePhase, initial: true) { _, phase in
+                    HakoHangDiagnostics.shared.setActive(phase == .active)
                     if phase == .active {
-                        Task { await HakoCloudSettings.shared.prepareForRecovery() }
+                        Task {
+                            let cloud = HakoCloudSettings.shared
+                            HakoApplications.registerBackupScopes(in: cloud)
+                            cloud.start()
+                            await cloud.prepareForRecovery()
+                        }
                         Task { await HakoPushNotifications.shared.syncDelivered() }
                         Task { await AppNetworkService.shared.refresh() }
                         Task { await BuildPushSubscription.shared.refresh() }
@@ -41,8 +47,6 @@ struct HomeView: View {
     @StateObject private var notifications = HakoNotificationsStore()
     @State private var path: [Destination] = []
     @State private var loginLink: HakoLoginLink?
-    @State private var workshopPreview: WorkshopPushNotice?
-    @State private var workshopSwitch: WorkshopPushNotice?
     @AppStorage(HakoApplicationOrder.storageKey) private var applicationOrderData = Data()
     @State private var category = Category.development
     @State private var versionWarning: String?
@@ -119,9 +123,9 @@ struct HomeView: View {
             .overlay(alignment: .top) {
                 if let notice = buildPush.workshopBanner {
                     WorkshopNotificationBanner(notice: notice, open: {
+                        HakoDiagnosticStore.shared.breadcrumb("点击应用内会话通知")
                         buildPush.dismissWorkshopNotice()
-                        loginLink = nil
-                        workshopPreview = notice
+                        HakoPinPresenter.shared.presentWorkshopNotification(notice)
                     }, dismiss: { buildPush.dismissWorkshopNotice() })
                         .id(notice.id)
                         .padding(.horizontal, 12).padding(.top, 6)
@@ -129,20 +133,6 @@ struct HomeView: View {
                 }
             }
             .animation(.easeInOut(duration: 0.2), value: buildPush.workshopBanner?.id)
-            .sheet(item: $workshopPreview, onDismiss: {
-                if let notice = workshopSwitch {
-                    workshopSwitch = nil
-                    buildPush.openWorkshopNotice(notice)
-                }
-            }) { notice in
-                HakoApplications.notifications.preview(for: notice, destination: .codeWorkshop) {
-                    workshopSwitch = notice
-                    workshopPreview = nil
-                }
-            }
-            .onChange(of: buildPush.workshopNavigationID) { _, _ in
-                workshopSwitch = nil; workshopPreview = nil
-            }
             .task(id: scenePhase == .active && buildPush.workshopRequested ? buildPush.workshopNavigationID : nil) {
                 guard !Task.isCancelled, scenePhase == .active, buildPush.workshopRequested else { return }
                 let requestID = buildPush.workshopNavigationID
@@ -265,14 +255,7 @@ struct HomeView: View {
 
     private func applicationRow(_ app: Application) -> some View {
         HStack(spacing: 13) {
-            Group {
-                if app == .qinglong {
-                    Image("QinglongLogo").renderingMode(.template).resizable().scaledToFit()
-                } else {
-                    Image(systemName: app.symbol).font(.system(size: 22, weight: .regular))
-                }
-            }
-            .frame(width: 24, height: 24).accessibilityHidden(true)
+            HakoApplicationIcon(application: app)
             VStack(alignment: .leading, spacing: 4) {
                 Text(app.rawValue).font(.system(size: 16, weight: .semibold))
                 Text(app.subtitle).font(.system(size: 11)).foregroundStyle(HakoStyle.muted)
@@ -294,8 +277,7 @@ private struct WorkshopNotificationBanner: View {
     var body: some View {
         Button(action: open) {
             HStack(alignment: .center, spacing: 12) {
-                Image(systemName: HakoApplications.Application.codeWorkshop.symbol)
-                    .font(.title2).frame(width: 30).accessibilityHidden(true)
+                HakoApplicationIcon(application: .codeWorkshop).frame(width: 30)
                 VStack(alignment: .leading, spacing: 3) {
                     Text(notice.title).font(.caption.weight(.semibold)).lineLimit(1)
                     if !notice.subtitle.isEmpty { Text(notice.subtitle).font(.subheadline).lineLimit(1) }

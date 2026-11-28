@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Collections.Concurrent;
 using System.IO;
 using System.Linq;
 using System.Text.Json;
@@ -10,6 +11,41 @@ using Hako.Platform;
 
 internal static class GuardianBrokerChecks
 {
+    private sealed class StalledDispatcher : SynchronizationContext
+    {
+        private readonly ConcurrentQueue<(SendOrPostCallback Callback, object? State)> pending = new();
+        internal int Posts;
+        public override void Post(SendOrPostCallback callback, object? state)
+        { Interlocked.Increment(ref Posts); pending.Enqueue((callback, state)); }
+        internal void Drain() { while (pending.TryDequeue(out var work)) work.Callback(work.State); }
+    }
+
+    internal static async Task CheckDispatcherIndependenceAsync()
+    {
+        var dispatcher = new StalledDispatcher();
+        var previous = SynchronizationContext.Current;
+        LocalRpcServer server;
+        var name = "hako-rpc-dispatcher-" + Guid.NewGuid().ToString("N");
+        try
+        {
+            SynchronizationContext.SetSynchronizationContext(dispatcher);
+            server = new LocalRpcServer(name, (_, publish, _) => publish(new { available = true }));
+        }
+        finally { SynchronizationContext.SetSynchronizationContext(previous); }
+        try
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            for (var index = 0; index < 3; index++)
+            {
+                var result = await LocalRpc.CallAsync(name, LocalRpc.Request("workshop", "operation.read"), timeout.Token);
+                if (!result.GetProperty("available").GetBoolean()) throw new Exception("Local RPC response lost");
+            }
+            if (dispatcher.Posts != 0) throw new Exception("Local RPC acceptance depends on the UI dispatcher");
+        }
+        finally { dispatcher.Drain(); await server.DisposeAsync(); }
+        Console.WriteLine("PASS: local RPC accepts successive workshop requests while the creating UI dispatcher is stalled");
+    }
+
     private static TaskCompletionSource<bool> Signal() => new(TaskCreationOptions.RunContinuationsAsynchronously);
     private static async Task Expect(string code, Func<Task> action)
     {
@@ -18,6 +54,7 @@ internal static class GuardianBrokerChecks
     }
     internal static async Task RunAsync()
     {
+        await CheckDispatcherIndependenceAsync();
         var profile = Path.Combine(Path.GetTempPath(), "hako-broker-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(profile);
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
@@ -32,6 +69,12 @@ internal static class GuardianBrokerChecks
         LocalRpcServer? main = null;
         try
         {
+            var privateLog = LocalRpcLog.ForProfile(profile, "test");
+            privateLog.Write("connect_failed", 2000, LocalRpc.Request("workshop", "operation.read",
+                new { secret = "PRIVATE-CONTENT" }, scope: "PRIVATE-CONTENT"), 3, 1, new IOException("PRIVATE-CONTENT"));
+            var diagnostic = File.ReadAllText(Path.Combine(profile, "logs", "local-rpc-test.jsonl"));
+            if (diagnostic.Contains("PRIVATE-CONTENT") || !diagnostic.Contains("connect_failed") || !diagnostic.Contains("busyWorkers"))
+                throw new Exception("Local RPC diagnostics leaked private content or lost stage/pressure evidence");
             await AgentVersionChecks.RunAsync(profile, token);
             var versionSource = new AgentVersions(profile, _ => Task.FromResult<GitHubAgentRelease?>(null));
             await using var dispatcher = new GuardianDispatcher(profile, services, versionSource);

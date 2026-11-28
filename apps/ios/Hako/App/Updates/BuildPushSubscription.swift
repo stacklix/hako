@@ -40,8 +40,11 @@ final class BuildPushSubscription: ObservableObject {
     }
     func dismissWorkshopNotice() { bannerDismissal?.cancel(); workshopBanner = nil }
     func openWorkshopNotice(_ notice: WorkshopPushNotice?) {
+        HakoDiagnosticStore.shared.breadcrumb("通知请求进入完整会话")
         dismissWorkshopNotice()
-        workshopNavigation.request(notice)
+        HakoPinPresenter.shared.navigateAfterDismissing { [weak self] in
+            self?.workshopNavigation.request(notice)
+        }
     }
 
     func workshopHostReady(_ requestID: UUID) { workshopNavigation.hostReady(requestID) }

@@ -23,12 +23,21 @@ internal static class CodeWorkshopChecks
     {
         WorkshopTaskProgressChecks.Run();
         WorkshopQuotaChecks.Run();
+        WorkshopPredictionChecks.Run();
         await WorkshopReadChecks.RunAsync();
+        await WorkshopWorkerChecks.RunAsync();
+        await GuardianBrokerChecks.CheckDispatcherIndependenceAsync();
         await WorkshopContextChecks.RunAsync();
         await WorkshopProjectFileChecks.RunAsync();
         await WorkshopConcurrencyChecks.RunAsync();
         await WorkshopSidechatChecks.RunAsync();
         WorkshopCatalogChecks.Run();
+        var planUpdate = CodeWorkshop.PlanUpdated(Json(new { turnId = "round", explanation = "Verify", plan = new[] {
+            new { step = "Inspect", status = "completed" }, new { step = "Test", status = "inProgress" } } }))!;
+        Check(planUpdate.Id == "plan-round" && planUpdate.TurnId == "round" && planUpdate.Plan is { Length: 2 } &&
+            planUpdate.Plan[1].Status == "inProgress", "Native plan updates lost their steps or turn identity");
+        Check(CodeWorkshop.PlanUpdated(Json(new { turnId = "round", plan = Array.Empty<object>() })) is { Plan.Length: 0 },
+            "Empty plan updates must clear previous plans");
         Check(CodexAppServer.RequestTimeout("turn/start") == TimeSpan.FromSeconds(60) &&
             CodexAppServer.RequestTimeout("thread/compact/start") == TimeSpan.FromSeconds(60) &&
             CodexAppServer.RequestTimeout("thread/items/list") == TimeSpan.FromSeconds(8),
@@ -534,6 +543,8 @@ internal static class CodeWorkshopChecks
                 File.Delete(summaryStatus);
                 await service.AnswerAsync(Json(new { operationId = requestId, approvalId = approval, decision = "accept" }), default);
                 Check(completed.GetProperty("events").EnumerateArray().Any(value => CodexJson.Text(value, "text") == "Fixture completed"), "Streamed answer was lost");
+                Check(completed.GetProperty("events").EnumerateArray().Any(value => CodexJson.Text(value, "kind") == "plan" &&
+                    CodexJson.Field(value, "plan").GetArrayLength() == 2), "Native plan notification did not reach the durable operation stream");
                 Check(completed.GetProperty("events").EnumerateArray().Any(value => CodexJson.Text(value, "id") == "answer" &&
                     CodexJson.Field(value, "startedAtMs").TryGetPositiveInt64() == 1_800_000_000_125L) &&
                     completed.GetProperty("events").EnumerateArray().Any(value => CodexJson.Text(value, "id") == "answer" &&
@@ -840,6 +851,8 @@ internal static class CodeWorkshopChecks
                     Write(new { method = "turn/completed", @params = new { threadId = FixtureThread, turn = new { id = turnId, status = "failed" } } });
                     continue;
                 }
+                Write(new { method = "turn/plan/updated", @params = new { threadId = FixtureThread, turnId, explanation = "Verify", plan = new[] {
+                    new { step = "Inspect", status = "completed" }, new { step = "Test", status = "inProgress" } } } });
                 Write(new { method = "item/completed", @params = new { threadId = FixtureThread, turnId, item = new { id = "commentary", type = "agentMessage", text = "Earlier progress update" } } });
                 Write(new { method = "item/started", @params = new { threadId = FixtureThread, turnId, startedAtMs = 1_800_000_000_125L, item = new { id = "answer", type = "agentMessage", text = "" } } });
                 Write(new { method = "item/agentMessage/delta", @params = new { threadId = FixtureThread, turnId, itemId = "answer", delta = "Fixture " } });
@@ -1045,7 +1058,8 @@ internal static class CodeWorkshopChecks
             {
                 "account/rateLimits/read" => new { accountId = "private-account", rateLimitsByLimitId = new { codex = new {
                     primary = new { usedPercent = 25.5, windowDurationMins = 300, resetsAt = 1800000000 },
-                    secondary = new { usedPercent = 60, windowDurationMins = 10080, resetsAt = 1800600000 }
+                    secondary = new { usedPercent = 60, windowDurationMins = 10080, resetsAt = 1800600000 },
+                    credits = new { hasCredits = true, unlimited = false, balance = "123.45" }
                 } } },
                 "model/list" => new { data = new[] { new { model = "fixture-vision", displayName = "Fixture Vision", description = "Fixture", isDefault = true, defaultReasoningEffort = "low", supportedReasoningEfforts = new[] { new { reasoningEffort = "high", description = "Deep reasoning" }, new { reasoningEffort = "low", description = "Quick reasoning" }, new { reasoningEffort = "future-effort", description = "Future model level" } }, inputModalities = new[] { "text", "image" }, serviceTiers = new[] { new { id = "priority", name = "Fast", description = "Faster fixture" } } } }, nextCursor = (string?)null },
                 "thread/list" => new { data = archived == (CodexJson.Field(CodexJson.Field(input, "params"), "archived").ValueKind == JsonValueKind.True) ? new[] { thread } : [], nextCursor = (string?)null },

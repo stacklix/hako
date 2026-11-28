@@ -13,6 +13,7 @@ struct InvestmentProfitCalendar: View {
 
     let book: InvestmentBook
     let bookVersion: UUID
+    var onLoadingChange: (Bool) -> Void = { _ in }
     @AppStorage("investment.overview.profitCalendar.monthly") private var showsMonths = false
     @State private var period = InvestmentBook.day()
     @State private var selectedDay = InvestmentBook.day()
@@ -27,7 +28,7 @@ struct InvestmentProfitCalendar: View {
 
     var body: some View {
         let request = Request(version: bookVersion, year: year, today: today)
-        let data = loaded?.request == request ? loaded?.data : nil
+        let data = loaded?.request.year == request.year ? loaded?.data : nil
         let selected = data?.months.first { $0.start == month }
         return InvestmentCard {
             header.zIndex(40)
@@ -40,14 +41,14 @@ struct InvestmentProfitCalendar: View {
                 if showsMonths { monthDetail(selected) }
                 else { dayDetail(data.dailyGains[selectedDay]) }
             } else {
-                ProgressView("正在汇总盈亏…").font(.caption)
-                    .frame(maxWidth: .infinity, minHeight: 300)
+                Color.clear.frame(height: 300)
             }
             Text("按人民币汇总每日盈亏，资金进出不计入收益。当前月份含今日暂估；缺少完整估值时显示「—」。")
                 .font(.caption2).foregroundStyle(.secondary)
         }
         .zIndex(showsViews ? 30 : 0)
         .task(id: request) { await load(request) }
+        .onChange(of: loaded?.request == request, initial: true) { _, complete in onLoadingChange(!complete) }
         .onChange(of: showsMonths) { showsViews = false }
         .onChange(of: period) { showsViews = false }
         .onChange(of: selectedDay) { showsViews = false }

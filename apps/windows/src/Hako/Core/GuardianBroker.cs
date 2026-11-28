@@ -49,7 +49,7 @@ internal sealed class GuardianBroker : IAsyncDisposable
     internal void Start()
     {
         if (rpc is not null) throw new InvalidOperationException("Guardian broker already started.");
-        rpc = new LocalRpcServer(LocalRpc.GuardianPipe(profile), HandleAsync);
+        rpc = new LocalRpcServer(LocalRpc.GuardianPipe(profile), HandleAsync, LocalRpcLog.ForProfile(profile, "guardian"));
         watching = Task.Run(WatchAsync);
     }
     private GuardianSnapshot Snapshot() => new(connection.Status, connection.CompatibilityWarning, workshop.State, workshop.ComputerId, error);

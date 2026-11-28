@@ -115,25 +115,23 @@ struct InvestmentPlansView: View {
     @State private var editing: EditorRequest?
 
     var body: some View {
+        let plans = store.book.plans(for: selectedAccount)
         SettingsSheet(title: "定投管理") {
             List {
-                ForEach(store.book.accounts) { account in
-                    let plans = store.book.plans.filter { $0.accountID == account.id }
-                    if !plans.isEmpty {
-                        Section(account.name + " · " + account.currency.rawValue) {
-                            ForEach(plans) { plan in
-                                Button { editing = EditorRequest(accountID: account.id, plan: plan) } label: {
-                                    planRow(plan, account: account)
-                                }
-                                .buttonStyle(.plain)
-                                .investmentListRow()
+                if let account = store.book.account(selectedAccount) {
+                    Section(account.name + " · " + account.currency.rawValue) {
+                        ForEach(plans) { plan in
+                            Button { editing = EditorRequest(accountID: account.id, plan: plan) } label: {
+                                planRow(plan, account: account)
                             }
+                            .buttonStyle(.plain)
+                            .investmentListRow()
                         }
                     }
                 }
-                if store.book.plans.isEmpty {
+                if plans.isEmpty {
                     ContentUnavailableView("暂无定投任务", systemImage: "calendar.badge.clock",
-                        description: Text("可以定期转入现金，或用账户现金定期买入。"))
+                        description: Text("当前账户暂无定投任务，可以定期转入现金，或用账户现金定期买入。"))
                 }
                 Section {
                     Text("定投在打开投资记账时补记。余额不足时跳过当期，买入等待可用日线报价。")
@@ -671,7 +669,7 @@ private struct InvestmentSettings: View {
             } header: {
                 Text("行情接口")
             } footer: {
-                Text("进入各接口页面配置密钥，查看最近24小时的成功与失败调用量。")
+                Text("密钥由主应用统一配置和验证；点击接口可查看最近24小时的成功与失败调用量。")
                 if !store.quoteStatus.isEmpty { Text(store.quoteStatus) }
             }
             Section {
@@ -715,9 +713,10 @@ private struct InvestmentSettings: View {
             }
         }
         .navigationTitle("投资记账设置")
+        .onAppear { store.refreshCredentialStatus() }
         .sheet(item: $sheet) { item in
             switch item {
-            case .credential(let source): InvestmentQuoteCredentialEditor(store: store, source: source)
+            case .credential(let source): InvestmentQuoteCredentialStatus(source: source)
             case .dataBackup: InvestmentDataBackupSettings()
             }
         }
@@ -737,22 +736,18 @@ private struct InvestmentSettings: View {
     }
 
     private func credentialLink(_ source: InvestmentQuoteSource) -> some View {
-        let configured = store.configuredSources.contains(source)
-        return Button { sheet = .credential(source) } label: {
+        Button { sheet = .credential(source) } label: {
             HStack {
                 Text(source.title)
                 Spacer()
-                if configured {
-                    Label("已配置", systemImage: "checkmark.circle.fill")
-                        .font(.caption).foregroundStyle(.green)
-                }
+                HakoCredentialStatus(key: source.credentialKey)
                 InvestmentChevron()
             }
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .investmentListRow()
-        .accessibilityValue(configured ? "已配置" : "未配置")
+        .accessibilityHint("查看调用统计；密钥由主应用统一管理")
     }
 
     private func prepareExport() async {
@@ -1055,156 +1050,22 @@ private struct SectionReportTotals: View {
     }
 }
 
-private struct InvestmentQuoteCredentialEditor: View {
-    let store: InvestmentStore
+private struct InvestmentQuoteCredentialStatus: View {
     let source: InvestmentQuoteSource
-    @Environment(\.dismiss) private var dismiss
-    @State private var key = ""
-    @State private var savedKey: String?
-    @State private var error: String?
-    @State private var testing = false
-    @State private var testMessage: String?
-    @State private var testSucceeded = false
-    @State private var showsKey = false
     @StateObject private var usage = InvestmentAPIUsageState()
-
-    private var hasChanges: Bool { savedKey.map { key != $0 } ?? false }
-
     var body: some View {
-        SettingsSheet(title: source.title, hasChanges: hasChanges, saveEnabled: hasChanges, onSave: save) {
+        SettingsSheet(title: source.title) {
             Form {
                 Section {
-                    VStack(alignment: .leading, spacing: 6) {
-                        HStack {
-                            Text(source.credential).font(.subheadline).foregroundStyle(.secondary)
-                            Spacer()
-                            Button { showsKey.toggle() } label: {
-                                Image(systemName: showsKey ? "eye" : "eye.slash")
-                            }
-                            .buttonStyle(.borderless)
-                            .accessibilityLabel((showsKey ? "隐藏" : "显示") + source.credential)
-                            .accessibilityValue(showsKey ? "已显示" : "已隐藏")
-                        }
-                        HakoSecureTextEditor(text: $key, isSecure: !showsKey, label: source.credential)
-                            .frame(minHeight: 88, alignment: .topLeading)
-                            .overlay(alignment: .topLeading) {
-                                if key.isEmpty {
-                                    Text("输入 " + source.credential)
-                                        .font(.body.monospaced())
-                                        .foregroundStyle(.tertiary)
-                                        .padding(.top, 8)
-                                        .allowsHitTesting(false)
-                                        .accessibilityHidden(true)
-                                }
-                            }
-                    }
-                    .investmentListRow()
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 10)
-                    .listRowInsets(EdgeInsets())
-                    .disabled(savedKey == nil)
+                    LabeledContent(source.credential) { HakoCredentialStatus(key: source.credentialKey) }
+                        .investmentListRow()
                 } footer: {
-                    Text("清空后保存可移除此行情源的凭据。")
+                    Text("密钥由主应用统一管理，请前往主应用设置的“金融 API Token”配置或验证。")
                 }
-                Section {
-                    VStack(alignment: .leading, spacing: 12) {
-                        Button { testing = true } label: {
-                            HStack(spacing: 8) {
-                                if testing { ProgressView() }
-                                Text(testing ? "正在测试…" : "测试连接")
-                            }
-                        }
-                        .buttonStyle(HakoActionButtonStyle(primary: false, outlined: true))
-                        .disabled(testing || savedKey == nil || key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                        if source == .tushare {
-                            Text("通过读取交易日历测试，需要该接口的访问权限。测试失败不一定表示 Token 无效。")
-                                .font(.caption).foregroundStyle(.secondary)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                        if let testMessage { connectionResult(testMessage) }
-                    }
-                    .listRowBackground(Color.clear)
-                    .listRowSeparator(.hidden)
-                    // Keep both outlines inside the grouped Form's rounded clipping boundary.
-                    .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 16))
-                }
-                if let error { Text(error).font(.caption).foregroundStyle(.red) }
-                if savedKey == nil { Button("重试读取", action: load) }
                 InvestmentAPIUsageChart(source: source, usage: usage)
             }
         }
-        .task { load() }
         .task(id: source) { await usage.observe(source) }
-        .task(id: testing) {
-            if testing { await testConnection() }
-        }
-        .onChange(of: key) { _, _ in testMessage = nil }
-    }
-
-    private func connectionResult(_ message: String) -> some View {
-        let tint = testSucceeded ? Color.green : Color.red
-        return HStack(alignment: .top, spacing: 10) {
-            Image(systemName: testSucceeded ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
-                .font(.body)
-                .foregroundStyle(tint)
-                .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 4) {
-                Text(testSucceeded ? "连接成功" : "连接失败")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.primary)
-                Text(message)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .textSelection(.enabled)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .padding(14)
-        .background(tint.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
-        .overlay {
-            RoundedRectangle(cornerRadius: 12)
-                .strokeBorder(tint.opacity(0.18), lineWidth: 1)
-                .allowsHitTesting(false)
-        }
-        .accessibilityElement(children: .combine)
-    }
-
-    private func testConnection() async {
-        let value = key
-        testMessage = nil
-        defer { testing = false }
-        do {
-            try await InvestmentQuoteProvider().testCredential(value, for: source)
-            guard !Task.isCancelled, key == value else { return }
-            testSucceeded = true
-            testMessage = source == .tushare
-                ? "Token 可用，交易日历读取正常。其他行情接口仍受各自权限与频率限制。"
-                : "凭据可用，行情接口响应正常。"
-        } catch {
-            guard !Task.isCancelled, key == value else { return }
-            testSucceeded = false
-            testMessage = error.localizedDescription
-        }
-    }
-
-    private func load() {
-        do {
-            key = try store.loadKey(for: source)
-            savedKey = key
-            error = nil
-        } catch {
-            self.error = error.localizedDescription
-        }
-    }
-
-    private func save() {
-        do {
-            try store.saveKey(key, for: source)
-            dismiss()
-        } catch {
-            self.error = error.localizedDescription
-        }
     }
 }
 

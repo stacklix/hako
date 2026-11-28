@@ -43,17 +43,27 @@ struct InvestmentView: View {
                     Button("打开设置") { showsSettings = true }.buttonStyle(HakoActionButtonStyle(primary: false))
                 }
             } else if !store.hasLoaded {
-                ProgressView("正在读取投资账本…")
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                InvestmentScroll {
+                    InvestmentCard {
+                        HStack(alignment: .firstTextBaseline) {
+                            Text("总资产 · CNY").font(.caption).foregroundStyle(.secondary)
+                            Spacer(minLength: 8)
+                            Text("正在读取投资账本…").font(.caption2).foregroundStyle(.secondary)
+                        }
+                        Text("—").font(.title2.weight(.semibold))
+                    }
+                }
             } else {
                 switch tab {
                 case .overview:
                     InvestmentOverview(book: store.book, bookVersion: store.bookVersion, presentation: store.presentation,
                                        showsArchived: store.showsArchived, insuranceGainBasis: store.insuranceGainBasis,
-                                       snapshotWriteRunning: store.snapshotWriteRunning) { id in
+                                       updateStatus: store.loading ? "正在同步投资账本…" : store.snapshotUpdateStatus ??
+                                        (store.snapshotWriteRunning ? "正在计算并保存快照…" : store.refreshing ? "正在更新行情…" : nil)) { id in
                         selectedAccount = id
                         tab = .accounts
                     }
+                        .id(store.ledgerRevision)
                         .refreshable { await store.refresh() }
                 case .accounts: accounts
                 case .watch: watch
@@ -254,7 +264,7 @@ struct InvestmentView: View {
 
 struct InvestmentAccountView: View {
     private static let sectionTitleFont: Font = .headline
-    private enum AccountTab: String, CaseIterable { case details = "账户明细", charts = "图表分析" }
+    private enum AccountTab: String, CaseIterable { case details = "账户明细", charts = "图表分析", transactions = "交易记录" }
 
     private enum AccountSheet: Hashable, Identifiable {
         case cash(InvestmentEventKind), transfer, history, plans, addAsset
@@ -273,22 +283,31 @@ struct InvestmentAccountView: View {
             let prepared = store.presentation.accounts[account.id]
             if let ledger = prepared?.ledger {
                 summary(ledger, valuation: prepared?.value)
-                HakoUnderlineTabs(title: "账户数据视图", options: AccountTab.allCases, selection: $accountTab) { $0.rawValue }
-                    .background(alignment: .bottom) { Divider() }
-                if accountTab == .details {
+            } else if let error = prepared?.error {
+                InvestmentCard { Text(error).foregroundStyle(.secondary) }
+            }
+            HakoUnderlineTabs(title: "账户数据视图", options: AccountTab.allCases, selection: $accountTab) { $0.rawValue }
+                .background(alignment: .bottom) { Divider() }
+            switch accountTab {
+            case .details:
+                if let ledger = prepared?.ledger {
                     cash(ledger)
                     holdings(ledger)
                 } else {
+                    Button("查看并修改流水") { sheet = .history }
+                        .buttonStyle(HakoActionButtonStyle(primary: false))
+                }
+            case .charts:
+                if prepared?.ledger != nil {
                     InvestmentPerformanceChart(book: book, bookVersion: store.bookVersion, accountID: account.id)
                     InvestmentCard {
                         InvestmentCurrentAllocation(details: prepared?.allocation ?? [], currency: account.currency,
                                                     day: store.presentation.day, overview: false)
                     }
                 }
-            } else {
-                if let error = prepared?.error { Text(error).foregroundStyle(.secondary) }
-                Button("查看并修改流水") { sheet = .history }
-                    .buttonStyle(HakoActionButtonStyle(primary: false))
+            case .transactions:
+                InvestmentAccountTransactions(store: store, account: account,
+                                              days: prepared?.transactions ?? [])
             }
         }
         .onChange(of: account.id) { accountTab = .details }
@@ -346,7 +365,7 @@ struct InvestmentAccountView: View {
     }
 
     private func cash(_ ledger: InvestmentLedger) -> some View {
-        let plans = book.plans.filter { $0.accountID == account.id && $0.enabled }
+        let plans = book.plans(for: account.id).filter(\.enabled)
         let balance = InvestmentText.money(ledger.cash, account.currency)
         return InvestmentCard {
             DisclosureGroup(isExpanded: $cashExpanded) {

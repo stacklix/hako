@@ -61,15 +61,19 @@ struct WorkshopMessageView: View, Equatable {
     let text: String
     let parts: [WorkshopMessagePart]
     let store: WorkshopStore
+    var projectPath = ""
+    var agent: WorkshopAgent? = nil
+    var application: WorkshopApplication? = nil
+    var threadId: String? = nil
 
-    static func == (left: Self, right: Self) -> Bool { left.text == right.text && left.parts == right.parts && left.store === right.store }
+    static func == (left: Self, right: Self) -> Bool { left.text == right.text && left.parts == right.parts && left.store === right.store && left.projectPath == right.projectPath && left.agent == right.agent && left.application == right.application && left.threadId == right.threadId }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             ForEach(Array(parts.enumerated()), id: \.offset) { _, part in
                 switch part {
                 case .text(let prose):
-                    WorkshopInlineProse(source: prose.trimmingCharacters(in: .newlines))
+                    WorkshopInlineProse(source: prose.trimmingCharacters(in: .newlines), projectPath: projectPath)
                 case .code(let code, let language):
                     if WorkshopDiagramDocument.supports(language) {
                         WorkshopDiagramView(source: code)
@@ -77,9 +81,15 @@ struct WorkshopMessageView: View, Equatable {
                         WorkshopCodeSnippet(code: code, language: language)
                     }
                 case .image(let alt, let url):
-                    WorkshopRemoteImage(alt: alt, url: url, store: store)
+                    if let agent, let application, let link = WorkshopProjectLink(url: url, projectPath: application.path) {
+                        WorkshopProjectImageView(path: link.path, alt: alt, store: store, agent: agent, application: application, threadId: threadId)
+                    } else if WorkshopBrowserLink(url: url) != nil {
+                        WorkshopRemoteImage(alt: alt, url: url, store: store, agentID: agent?.id, threadId: threadId)
+                    } else {
+                        Label("图片不在当前项目内，无法预览。", systemImage: "photo").font(.caption).foregroundStyle(.secondary)
+                    }
                 case .table(let table):
-                    WorkshopTableView(table: table)
+                    WorkshopTableView(table: table, projectPath: projectPath)
                 }
             }
         }
@@ -90,6 +100,7 @@ struct WorkshopMessageView: View, Equatable {
 
 private struct WorkshopTableView: View {
     let table: WorkshopMarkdownTable
+    let projectPath: String
 
     var body: some View {
         ViewThatFits(in: .horizontal) {
@@ -112,7 +123,7 @@ private struct WorkshopTableView: View {
     private func compactRow(_ cells: [String], header: Bool) -> some View {
         GridRow(alignment: .top) {
             ForEach(Array(cells.enumerated()), id: \.offset) { index, cell in
-                WorkshopInlineProse(source: cell.isEmpty ? "—" : cell)
+                WorkshopInlineProse(source: cell.isEmpty ? "—" : cell, projectPath: projectPath)
                     .fontWeight(header ? .medium : .regular)
                     .foregroundStyle(header ? HakoStyle.muted : HakoStyle.text)
                     .fixedSize(horizontal: true, vertical: true)
@@ -128,7 +139,7 @@ private struct WorkshopTableView: View {
         VStack(alignment: .leading, spacing: 0) {
             if table.rows.isEmpty {
                 ForEach(Array(table.headers.enumerated()), id: \.offset) { _, header in
-                    WorkshopInlineProse(source: header).fontWeight(.medium)
+                    WorkshopInlineProse(source: header, projectPath: projectPath).fontWeight(.medium)
                 }
             }
             ForEach(Array(table.rows.enumerated()), id: \.offset) { rowIndex, cells in
@@ -137,7 +148,7 @@ private struct WorkshopTableView: View {
                     ForEach(Array(table.headers.enumerated()), id: \.offset) { column, header in
                         VStack(alignment: .leading, spacing: 4) {
                             Text(header).font(.caption).foregroundStyle(HakoStyle.muted)
-                            WorkshopInlineProse(source: cells[column].isEmpty ? "—" : cells[column])
+                            WorkshopInlineProse(source: cells[column].isEmpty ? "—" : cells[column], projectPath: projectPath)
                                 .fontWeight(column == 0 ? .medium : .regular)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
@@ -189,6 +200,7 @@ private struct WorkshopMessageCopy: ViewModifier {
 
 private struct WorkshopInlineProse: View {
     let source: String
+    var projectPath = ""
     @Environment(\.openURL) private var openURL
     @State private var rendered: (text: Text, copies: [URL: String])?
 
@@ -209,7 +221,7 @@ private struct WorkshopInlineProse: View {
                 UIAccessibility.post(notification: .announcement, argument: "已复制")
                 return .handled
             })
-            .task(id: source) {
+            .task(id: source + "\n" + projectPath) {
                 let source = source
                 let parsed = await Task.detached(priority: .userInitiated) {
                     (try? AttributedString(markdown: source,
@@ -237,13 +249,14 @@ private struct WorkshopInlineProse: View {
         let rendered = runs.enumerated().reduce(Text("")) { result, item in
             let (index, run) = item
             var value = AttributedString(text[run.range])
-            if let link = run.link, copies[link] == nil, !WorkshopBrowserLink.allows(link) {
+            let localFile = run.link.flatMap { WorkshopProjectLink(url: $0, projectPath: projectPath) } != nil
+            if let link = run.link, copies[link] == nil, !WorkshopBrowserLink.allows(link), !localFile {
                 value.link = nil
             }
             var fragment = Text(value)
             if let link = run.link, copies[link] != nil {
                 fragment = fragment.customAttribute(WorkshopInlineCodeAttribute(id: link))
-            } else if let link = run.link, WorkshopBrowserLink.allows(link) {
+            } else if let link = run.link, WorkshopBrowserLink.allows(link) || localFile {
                 fragment = fragment.foregroundColor(HakoStyle.link).underline(true, color: HakoStyle.link)
                 // A link can contain several styled runs. Add one marker at its end,
                 // with the same destination so tapping the marker also opens it.
@@ -531,7 +544,7 @@ struct WorkshopPhotoPreview: View {
     }
 }
 
-private struct WorkshopImageZoom: UIViewRepresentable {
+struct WorkshopImageZoom: UIViewRepresentable {
     let image: UIImage
     func makeCoordinator() -> Coordinator { Coordinator() }
     func makeUIView(context: Context) -> UIScrollView {
@@ -574,6 +587,8 @@ private struct WorkshopRemoteImage: View {
     let alt: String
     let url: URL
     let store: WorkshopStore
+    let agentID: String?
+    let threadId: String?
     @State private var photo: WorkshopPhoto?
     @State private var selected: WorkshopPhoto?
     @State private var failure: String?
@@ -604,7 +619,8 @@ private struct WorkshopRemoteImage: View {
     @MainActor private func load() async {
         guard photo == nil else { return }
         failure = nil
-        if let data = store.cachedRemoteImage(url), UIImage(data: data) != nil {
+        let cacheTicket = store.imageCacheTicket(agentID: agentID, threadID: threadId)
+        if let data = await store.cachedRemoteImage(url, ticket: cacheTicket), UIImage(data: data) != nil {
             photo = WorkshopPhoto(id: url.absoluteString, data: data)
             return
         }
@@ -619,7 +635,7 @@ private struct WorkshopRemoteImage: View {
             }
             guard scope == store.scope else { throw CancellationError() }
             // A full disk must not hide an image that was downloaded successfully.
-            try? store.cacheRemoteImage(data, from: url)
+            await store.cacheRemoteImage(data, from: url, ticket: cacheTicket)
             photo = WorkshopPhoto(id: url.absoluteString, data: data)
         } catch is CancellationError { }
         catch { if !Task.isCancelled { failure = "图片暂时无法加载，请重试或打开原图。" } }

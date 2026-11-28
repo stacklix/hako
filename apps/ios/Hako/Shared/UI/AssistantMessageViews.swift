@@ -133,6 +133,7 @@ struct AssistantInputBar: View {
             .disabled(!allowsPhotos)
             TextField(prompt, text: $text, axis: .vertical)
                 .font(.body).lineLimit(1...5)
+                .fixedSize(horizontal: false, vertical: true)
                 .padding(.vertical, 11).frame(maxWidth: .infinity, alignment: .leading)
                 .accessibilityLabel("聊天消息")
                 .focused(focus)
@@ -154,6 +155,7 @@ struct AssistantInputBar: View {
         .padding(4)
         .background(HakoStyle.card, in: RoundedRectangle(cornerRadius: 27))
         .overlay { RoundedRectangle(cornerRadius: 27).strokeBorder(HakoStyle.line, lineWidth: 1).allowsHitTesting(false) }
+        .layoutPriority(1)
     }
 }
 

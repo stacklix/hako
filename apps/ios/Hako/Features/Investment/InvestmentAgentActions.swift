@@ -50,9 +50,10 @@ struct InvestmentAgentAction: Codable {
         let label: String
         var required = false
         var choices: [String] = []
+        var detail: String? = nil
 
         var schema: [String: Any] {
-            var schema: [String: Any] = ["type": "string", "description": label]
+            var schema: [String: Any] = ["type": "string", "description": detail ?? label]
             if !choices.isEmpty { schema["enum"] = choices }
             return schema
         }
@@ -99,7 +100,7 @@ struct InvestmentAgentAction: Codable {
         let optional: (Field) -> Field = { var field = $0; field.required = false; return field }
         let eventValues = [optional(amount), Field(key: "quantity", label: "数量（正数）"),
                            Field(key: "direction", label: "金额变动方向，变动金额填非负数", choices: ["increase", "decrease"]),
-                           Field(key: "price", label: "单位价格"), Field(key: "fee", label: "手续费"),
+                           Field(key: "price", label: "单位价格", detail: "市场标的单价最多 \(InvestmentPrecision.unitPriceScale) 位小数；保险保费、理财申购等实际金额仍按金额精度。不得自动舍入。"), Field(key: "fee", label: "手续费"),
                            Field(key: "margin", label: "期货每手保证金"), settlement]
         switch kind {
         case .addAccount: return [name, currency, .init(key: "account_type", label: "账户类型", required: true, choices: accountTypes.keys.sorted())]
@@ -275,7 +276,7 @@ struct InvestmentAgentAction: Codable {
             } else { book.watched.removeAll { $0 == item.id } }
         case .quote:
             let item = try asset(in: book)
-            let price = try decimal("price", fallback: 0)
+            let price = try price(for: item.kind, fallback: 0)
             guard price > 0 || (item.kind == .insurance && price == 0) else { throw missing("有效报价") }
             book.addQuotes([.init(day: try date("date", through: today), price: price, source: "手动录入")], assetID: item.id)
             book.runPlans(through: InvestmentBook.addDays(-1, to: today))
@@ -395,7 +396,7 @@ struct InvestmentAgentAction: Codable {
         }
         if let asset = book.asset(event.assetID), asset.kind.usesBalance || asset.kind == .insurance,
            [.buy, .sell, .opening].contains(type) { event.quantity = 1 }
-        event.price = try decimal("price", fallback: event.price)
+        event.price = try price(for: book.asset(event.assetID)?.kind, fallback: event.price)
         event.margin = try decimal("margin", fallback: event.margin)
         if values["fee"] != nil { event.fee = try number("fee") }
         if type == .insuranceWithdrawal, values["settled_amount"] != nil {
@@ -506,13 +507,19 @@ struct InvestmentAgentAction: Codable {
         return id
     }
 
+    private func price(for assetKind: InvestmentKind?, fallback: Decimal) throws -> Decimal {
+        guard let input = text("price") else { return fallback }
+        return try InvestmentPrecision.parseInput(input, field: "单位价格", allowZero: true,
+                                                  rule: .price(for: assetKind))
+    }
+
     private func number(_ key: String) throws -> Decimal? {
         guard let value = text(key) else { return nil }
         guard value.range(of: #"^-?[0-9]{1,18}(\.[0-9]{1,18})?$"#, options: .regularExpression) != nil,
               let number = InvestmentPrecision.exactInput(value) else {
             throw missing(fields.first { $0.key == key }?.label ?? key)
         }
-        if ["amount", "price", "fee", "margin", "settled_amount", "counterpart_amount", "received"].contains(key),
+        if ["amount", "fee", "margin", "settled_amount", "counterpart_amount", "received"].contains(key),
            !(kind == .spotBalance && key == "amount") {
             try InvestmentPrecision.validateInput(number, field: fields.first { $0.key == key }?.label ?? key)
         }

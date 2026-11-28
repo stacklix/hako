@@ -143,6 +143,7 @@ struct QinglongRecordEditor: View {
         var fields = [String: String]()
         for key in ["name", "command", "schedule", "value", "remarks", "url", "alias", "branch", "whitelist", "blacklist"] { fields[key] = item?.raw[key].text ?? "" }
         if item == nil && resource == .subscriptions { fields["schedule"] = "0 2 * * *" }
+        if resource == .subscriptions { fields["type"] = item?.raw["type"].text ?? QinglongSubscription.repository }
         _fields = State(initialValue: fields)
         _enabled = State(initialValue: !(item?.disabled ?? false))
         _persistedItem = State(initialValue: item)
@@ -178,9 +179,8 @@ struct QinglongRecordEditor: View {
         switch resource {
         case .envs: payload = fields.filter { ["name", "value", "remarks"].contains($0.key) }
         case .subscriptions:
-            payload = fields.filter { ["name", "url", "alias", "branch", "whitelist", "blacklist"].contains($0.key) }
+            payload = fields.filter { ["type", "name", "url", "alias", "branch", "whitelist", "blacklist"].contains($0.key) }
             if item == nil || item?.raw["schedule_type"].text == "crontab" { payload["schedule"] = fields["schedule"] }
-            if item == nil { payload["type"] = "public-repo"; payload["schedule_type"] = "crontab" }
         default: return
         }
         let required = resource == .envs ? ["name", "value"] : ["url", "alias"]

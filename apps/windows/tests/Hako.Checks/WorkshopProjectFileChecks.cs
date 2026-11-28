@@ -100,6 +100,29 @@ internal static class WorkshopProjectFileChecks
             File.SetAttributes(readonlyPath, FileAttributes.Normal);
             File.WriteAllBytes(Path.Combine(root, "oversize.txt"), new byte[WorkshopProjectFiles.TextLimit + 1]);
             Check(!(await Call("files.read", new { path = "oversize.txt" })).GetProperty("editable").GetBoolean(), "Oversize text became editable");
+            var image = new byte[70_000];
+            new byte[] { 137, 80, 78, 71, 13, 10, 26, 10 }.CopyTo(image, 0);
+            File.WriteAllBytes(Path.Combine(root, "image.png"), image);
+            var imageFirst = await Call("files.image.read", new { path = "image.png", offset = 0 });
+            Check(imageFirst.GetProperty("total").GetInt32() == image.Length &&
+                Convert.FromBase64String(imageFirst.GetProperty("content").GetString()!).Length == 24 * 1024 &&
+                imageFirst.GetProperty("revision").GetString() == Hash(image), "Image read lost chunk bounds or hash");
+            // A concurrent edit must not mix bytes into an in-flight snapshot.
+            var imageRevision = imageFirst.GetProperty("revision").GetString();
+            File.WriteAllBytes(Path.Combine(root, "image.png"), "GIF89a-new-version"u8.ToArray());
+            var imageNext = await Call("files.image.read", new { path = "image.png", offset = 24 * 1024, revision = imageRevision });
+            Check(imageNext.GetProperty("revision").GetString() == imageRevision &&
+                Convert.FromBase64String(imageNext.GetProperty("content").GetString()!).All(b => b == 0), "Image snapshot mixed revisions");
+            var refreshedImage = await Call("files.image.read", new { path = "image.png", offset = 0 });
+            Check(refreshedImage.GetProperty("revision").GetString() != imageRevision, "Reopening an image retained stale bytes");
+            await Reject("files.image.read", new { path = "image.png", offset = 0, revision = imageRevision }, "file_conflict");
+            await Reject("files.image.read", new { path = "../image.png", offset = 0 }, "invalid_params");
+            await Reject("files.image.read", new { path = ".git/config", offset = 0 }, "invalid_params");
+            await Reject("files.image.read", new { path = "image.png", offset = 100_000 }, "invalid_params");
+            File.WriteAllText(Path.Combine(root, "fake.png"), "<html>not an image</html>");
+            await Reject("files.image.read", new { path = "fake.png", offset = 0 }, "file_not_image");
+            File.WriteAllBytes(Path.Combine(root, "large.png"), new byte[CodeWorkshop.MaximumReadImageBytes + 1]);
+            await Reject("files.image.read", new { path = "large.png", offset = 0 }, "file_too_large");
             Console.WriteLine("Workshop project file checks passed (paging, search, bounds, encoding, chunks, conflicts, Git status).");
         }
         finally

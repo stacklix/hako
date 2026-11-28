@@ -174,7 +174,7 @@ struct StockTradeTimeline: View {
     }
     private func description(_ phase: String, done: Bool, active: Bool) -> String {
         guard let task else {
-            return ["fetch": "更新全市场日线与基础数据", "preselect": "生成候选名单，沿用后台策略", "review": "形成评分、入选原因与风险说明", "publish": "确认完整性后切换最新结果", "monitor": "初始化观察名单、发布监控快照并启用持续调度"][phase] ?? ""
+            return ["fetch": "更新所选范围内的日线与基础数据", "preselect": "使用本次配置生成候选名单", "review": "形成评分、入选原因与风险说明", "publish": "确认完整性后切换最新结果", "monitor": "初始化观察名单、发布监控快照并启用持续调度"][phase] ?? ""
         }
         if done { return "已完成" }
         if active { return task.state == .failed ? "此步骤未完成" : "执行中 · 等待后台进度" }

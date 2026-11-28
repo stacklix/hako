@@ -23,6 +23,7 @@ struct InvestmentAgentTests {
         try followUpReplacesUncommittedDraft()
 
         try formInspectionCollectsMissingFieldsWithoutWriting()
+        try unitPricePrecisionMatchesEntryForms()
 
         try businessActionsGroupLinkedRecords()
         try cashBalanceUsesAdjustment()
@@ -403,7 +404,7 @@ struct InvestmentAgentTests {
         let ledger = try book.ledger(book.accounts[0], validatingBalances: true)
         precondition(ledger.cash == 0)
         var invalid = action
-        invalid.values["price"] = "71504.123"
+        invalid.values["price"] = "71504.12345"
         let count = book.accounts[0].events.count
         do { try invalid.apply(to: &book); preconditionFailure("Excess input precision cannot be silently rounded") }
         catch InvestmentError.invalid {}
@@ -783,6 +784,76 @@ struct InvestmentAgentTests {
     }
 
 
+
+    private static func unitPricePrecisionMatchesEntryForms() throws {
+        let day = InvestmentBook.day()
+        let date = InvestmentBook.snapshotDateFormatter().string(from: day)
+        let examples: [(InvestmentKind, InvestmentCurrency, String, String)] = [
+            (.stock, .cny, "600036.SH", "XSHG"), (.etf, .cny, "159941.SZ", "XSHE"),
+            (.stock, .usd, "AAPL", "XNAS"), (.etf, .usd, "QQQM", "XNAS"),
+            (.stock, .hkd, "00700.HK", InvestmentAsset.stockConnectMarket),
+            (.etf, .hkd, "02800.HK", InvestmentAsset.stockConnectMarket),
+            (.fund, .cny, "017356.OF", ""), (.crypto, .usd, "BTC", "")
+        ]
+        for (kind, currency, code, market) in examples {
+            let account = InvestmentAccount(name: "单价校验", currency: currency == .hkd ? .cny : currency,
+                                            type: kind == .crypto ? .crypto : kind == .fund ? .fundWealth : .securities)
+            var book = InvestmentBook(accounts: [account])
+            let id = try book.register(.init(name: code, code: code, market: market, kind: kind, currency: currency))
+            try book.post(.init(day: day, kind: .deposit, amount: 10000), accountID: account.id)
+            var buy = InvestmentAgentAction(kind: .addEvent, values: ["account_id": account.id.uuidString,
+                "asset_id": id.uuidString, "date": date, "event_type": "buy", "quantity": "1", "price": "12.3456", "fee": "0.01"])
+            if currency == .hkd {
+                buy.values["settled_amount"] = "12.35"
+                buy.values.removeValue(forKey: "fee")
+            }
+            let checked = InvestmentAgentAction.inspect([buy], in: book)
+            precondition(checked[0]["validation_error"] == nil && (checked[0]["missing"] as? [String])?.isEmpty == true,
+                         "\(code): \(checked[0])")
+            let proposal = try InvestmentAgentProposal(base: snapshot(book), actions: [buy])
+            let original = proposal.book.accounts[0].events.last!
+            precondition(original.price == Decimal(string: "12.3456"))
+            precondition(book.accounts[0].events.count == 1, "Inspection and preview must not write the input book")
+            let edit = InvestmentAgentAction(kind: .editEvent, values: ["account_id": account.id.uuidString,
+                "event_id": original.id.uuidString, "price": "13.4567"])
+            precondition(InvestmentAgentAction.inspect([edit], in: proposal.book)[0]["validation_error"] == nil,
+                         "Editing resolves the existing asset without requiring asset_id again")
+            let edited = try InvestmentAgentProposal(base: snapshot(proposal.book), actions: [edit])
+            precondition(edited.book.accounts[0].events.last?.price == Decimal(string: "13.4567"))
+            var invalidBuy = buy
+            invalidBuy.values["price"] = "12.34567"
+            var invalidEdit = edit
+            invalidEdit.values["price"] = "13.45678"
+            for (action, context) in [(invalidBuy, book), (invalidEdit, proposal.book)] {
+                precondition((InvestmentAgentAction.inspect([action], in: context)[0]["validation_error"] as? String)?.contains("4 位小数") == true)
+                do {
+                    _ = try InvestmentAgentProposal(base: snapshot(context), actions: [action])
+                    preconditionFailure("AI unit prices must reject more than four decimal places")
+                } catch is InvestmentError { }
+            }
+            for key in ["amount", "fee", "settled_amount"] {
+                var invalidMoney = buy
+                invalidMoney.values[key] = "1.234"
+                precondition((InvestmentAgentAction.inspect([invalidMoney], in: book)[0]["validation_error"] as? String)?.contains("通常最多 2 位小数") == true,
+                             "Allowing four-place unit prices must not relax monetary fields")
+            }
+            var opening = buy
+            opening.values["event_type"] = "opening"
+            opening.values.removeValue(forKey: "fee")
+            precondition(InvestmentAgentAction.inspect([opening], in: book)[0]["validation_error"] == nil,
+                         "Initial positions use the same unit-price rule")
+        }
+        for kind in [InvestmentKind.wealth, .insurance] {
+            let account = InvestmentAccount(name: "金额校验", currency: .cny, type: kind == .insurance ? .insurance : .fundWealth)
+            var book = InvestmentBook(accounts: [account])
+            let id = try book.register(.init(name: "金额产品", code: "PRODUCT", market: "", kind: kind, currency: .cny))
+            try book.post(.init(day: day, kind: .deposit, amount: 100), accountID: account.id)
+            let buy = InvestmentAgentAction(kind: .addEvent, values: ["account_id": account.id.uuidString,
+                "asset_id": id.uuidString, "date": date, "event_type": "buy", "price": "1.234", "settled_amount": "1.23"])
+            precondition((InvestmentAgentAction.inspect([buy], in: book)[0]["validation_error"] as? String)?.contains("通常最多 2 位小数") == true,
+                         "Premiums and wealth purchases are amounts, even though their action key is price")
+        }
+    }
 
     private static func businessActionsGroupLinkedRecords() throws {
         let day = InvestmentBook.day()

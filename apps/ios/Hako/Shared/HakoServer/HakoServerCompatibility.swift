@@ -17,6 +17,11 @@ enum HakoServerCompatibility {
         let warning: String?
     }
 
+    static func serverWarning(for version: String) -> String? {
+        guard let server = parse(version), let minimum = parse(minimumServerVersion) else { return invalidMetadata }
+        return mismatch(server, minimum: minimum, component: "服务端", requiredBy: "Hako iOS")
+    }
+
     static func check(origin: String) async throws -> Result {
         guard var components = URLComponents(string: origin),
               components.scheme == "https", let host = components.host, !host.isEmpty,
@@ -37,18 +42,18 @@ enum HakoServerCompatibility {
 
     static func evaluate(_ data: Data, iosVersion: String) -> Result {
         guard let versions = try? JSONDecoder().decode(Versions.self, from: data),
-              let server = parse(versions.serverVersion) else {
+              parse(versions.serverVersion) != nil else {
             return Result(serverVersion: nil, warning: invalidMetadata)
         }
         guard let minimumIOS = versions.minimumIosVersion.flatMap(parse) else {
             return Result(serverVersion: versions.serverVersion, warning: invalidMetadata)
         }
-        guard let client = parse(iosVersion), let minimumServer = parse(minimumServerVersion) else {
+        guard let client = parse(iosVersion) else {
             return Result(serverVersion: versions.serverVersion, warning: "无法读取 Hako iOS 版本，请重新安装 Hako。")
         }
         let warnings = [
             mismatch(client, minimum: minimumIOS, component: "Hako iOS", requiredBy: "服务端"),
-            mismatch(server, minimum: minimumServer, component: "服务端", requiredBy: "Hako iOS"),
+            serverWarning(for: versions.serverVersion),
         ].compactMap { $0 }
         return Result(serverVersion: versions.serverVersion, warning: warnings.isEmpty ? nil : warnings.joined(separator: "\n\n"))
     }

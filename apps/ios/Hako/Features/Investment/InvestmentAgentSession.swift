@@ -11,6 +11,7 @@ final class InvestmentAgentSession: ObservableObject {
 
     @Published private(set) var messages: [Message] = []
     @Published private(set) var proposal: InvestmentAgentProposal?
+    @Published private(set) var changingConversation = false
     @Published private(set) var working = false
     @Published private(set) var committing = false
     @Published private(set) var stale = false
@@ -57,7 +58,8 @@ final class InvestmentAgentSession: ObservableObject {
         catch { storageIssue = "无法读取本机保存的会话。" }
     }
 
-    func saveComposerDraft() {
+    func saveComposerDraft(whileSwitching: Bool = false) {
+        guard !changingConversation || whileSwitching else { return }
         guard let conversationFile else { return }
         if working, !committing, streamContent.hasContent {
             preserveStreamedReply()
@@ -101,7 +103,7 @@ final class InvestmentAgentSession: ObservableObject {
 
     @discardableResult
     func select(_ choice: AssistantReplyChoices.Choice, replyingTo messageID: UUID) -> Bool {
-        guard !working, !committing, !canRetry, messages.last?.id == messageID,
+        guard !changingConversation, !working, !committing, !canRetry, messages.last?.id == messageID,
               let html = messages.last?.html,
               AssistantReplyChoices(html).choices.contains(choice) else { return false }
         return send(choice.reply, images: [])
@@ -109,7 +111,7 @@ final class InvestmentAgentSession: ObservableObject {
 
     private func start(_ text: String, images: [Data], retry: Bool) -> Bool {
         restoreConversation()
-        guard !working, !committing, !text.isEmpty || !images.isEmpty else { return false }
+        guard !changingConversation, !working, !committing, !text.isEmpty || !images.isEmpty else { return false }
         guard images.count <= InvestmentAgentConversation.maximumImageCount else {
             error = "每条消息最多添加 \(InvestmentAgentConversation.maximumImageCount) 张图片。"
             return false
@@ -137,17 +139,96 @@ final class InvestmentAgentSession: ObservableObject {
 
     func stop() { turn?.cancel() }
 
-    func startNewConversation() -> Bool {
-        guard !working, !committing else { return false }
+    func startNewConversation() async -> Bool {
+        guard !changingConversation, !working, !committing, !loadingPhoto else { return false }
+        restoreConversation()
+        guard let file = conversationFile, let expected = session else { return false }
+        changingConversation = true
+        defer { changingConversation = false }
         do {
-            try conversationFile?.remove()
+            try await archiveCurrent(file)
+            try await AssistantConversationHistory.shared.reset(current: file.url)
+            guard (try? store.agentSnapshot().session) == expected else { return false }
             clearConversation()
+            restoreConversation()
             error = nil
             return true
         } catch {
-            storageIssue = "无法清空本机保存的会话，请重试。"
+            storageIssue = "无法保留当前会话，尚未新建。" + error.localizedDescription
             return false
         }
+    }
+
+    func historyEntries() async throws -> [AssistantConversationHistory.Entry] {
+        guard !changingConversation, !working, !committing, !loadingPhoto else { throw CancellationError() }
+        restoreConversation()
+        guard let file = conversationFile else { throw CocoaError(.fileReadNoSuchFile) }
+        changingConversation = true
+        defer { changingConversation = false }
+        try await archiveCurrent(file)
+        let entries = try await AssistantConversationHistory.shared.list(current: file.url)
+        guard isCurrentHistoryFile(file) else { throw CancellationError() }
+        return entries
+    }
+
+    func historyMessages(_ id: UUID) async throws -> [AssistantHistoryMessage] {
+        guard let file = conversationFile else { throw CocoaError(.fileReadNoSuchFile) }
+        let snapshot = try await AssistantConversationHistory.shared.load(id, current: file.url)
+        guard isCurrentHistoryFile(file) else { throw CancellationError() }
+        let conversation = try PropertyListDecoder().decode(InvestmentAgentConversation.self, from: snapshot.conversation)
+        var result = conversation.messages.map { message in
+            AssistantHistoryMessage(id: message.id, text: message.text, isUser: message.isUser, images: message.images,
+                html: message.html, confirmationSymbols: message.receipt.map { receipt in
+                    Dictionary(receipt.buyItemIndices.map { ($0, "arrow.down.left") }, uniquingKeysWith: { first, _ in first })
+                })
+        }
+        if let proposal = conversation.proposal {
+            result.append(.init(id: proposal.id, text: "未确认的记账草稿：" + proposal.preview.summary + "。继续对话后需重新生成并核对。", isUser: false))
+        }
+        if let bytes = snapshot.draft {
+            let draft = try PropertyListDecoder().decode(AssistantComposerDraft.self, from: bytes)
+            if !draft.isEmpty {
+                result.append(.init(id: snapshot.entry.id, text: "未发送的草稿：\n" + draft.text, isUser: true, images: draft.attachments.map(\.data)))
+            }
+        }
+        return result
+    }
+
+    func openHistory(_ id: UUID) async -> Bool {
+        guard !changingConversation, !working, !committing, !loadingPhoto,
+              let file = conversationFile, let expected = session else { return false }
+        changingConversation = true
+        defer { changingConversation = false }
+        do {
+            try await archiveCurrent(file)
+            guard isCurrentHistoryFile(file) else { return false }
+            if try await AssistantConversationHistory.shared.isActive(id, current: file.url) { return true }
+            let saved = try await AssistantConversationHistory.shared.load(id, current: file.url)
+            try saved.validate(conversation: InvestmentAgentConversation.self, tool: InvestmentAgentToolCall.self)
+            guard isCurrentHistoryFile(file) else { return false }
+            try await AssistantConversationHistory.shared.activate(saved, current: file.url)
+            guard (try? store.agentSnapshot().session) == expected else { return false }
+            clearConversation()
+            restoreConversation()
+            // Old proposals are evidence only; opening history must never revive a write action.
+            proposal = nil; stale = false; canRetry = false
+            return persistConversation()
+        } catch { storageIssue = "无法打开历史会话。" + error.localizedDescription; return false }
+    }
+
+    private func isCurrentHistoryFile(_ file: InvestmentAgentConversationFile) -> Bool {
+        conversationFile?.url == file.url && session != nil && session == (try? store.agentSnapshot().session)
+    }
+
+    private func archiveCurrent(_ file: InvestmentAgentConversationFile) async throws {
+        guard !messages.isEmpty || !composerDraft.isEmpty else { return }
+        guard persistConversation() else { throw CocoaError(.fileWriteUnknown) }
+        saveComposerDraft(whileSwitching: true)
+        guard storageIssue == nil else { throw CocoaError(.fileWriteUnknown) }
+        let first = messages.first(where: \.isUser)?.text.trimmingCharacters(in: .whitespacesAndNewlines) ?? composerDraft.text
+        try await AssistantConversationHistory.shared.save(current: file.url,
+            title: first.isEmpty ? "图片记账" : first,
+            preview: messages.last?.text ?? "未发送的消息")
     }
 
     private func run(_ text: String, images: [Data], profile: LanguageModelProfile, retry: Bool) async {
@@ -363,6 +444,7 @@ final class InvestmentAgentSession: ObservableObject {
     }
 
     func commit(_ id: UUID) async {
+        guard !changingConversation else { return }
         guard let proposal, proposal.id == id, !committing, !working, !stale else { return }
         do { try ensureSession(proposal.session) }
         catch { resetLedgerSession(); return }

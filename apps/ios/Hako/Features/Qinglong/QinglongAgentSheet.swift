@@ -17,9 +17,9 @@ struct QinglongAgentSheet: View {
     @State private var selectedPhotos: [PhotosPickerItem] = []
     @State private var photoSelectionLimit = QinglongAgentSession.maximumImageCount
     @State private var imagePreview: AssistantImageSelection?
+    @State private var showsHistory = false
     @State private var showsPhotos = false
     @State private var showsModelSettings = false
-    @State private var confirmsNewConversation = false
     @State private var scrollFollowing = ConversationScrollFollowing()
     @State private var scrollPosition = ScrollPosition(edge: .bottom)
     @FocusState private var composing: Bool
@@ -36,15 +36,20 @@ struct QinglongAgentSheet: View {
     }
 
     var body: some View {
-        SettingsSheet(title: "青龙助手", isBusy: agent.committing) {
+        SettingsSheet(title: "青龙助手", isBusy: agent.committing || agent.changingConversation) {
             VStack(spacing: 0) {
                 thread
                 composer
             }
             .background(HakoStyle.background)
+            .disabled(agent.changingConversation)
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button { confirmsNewConversation = true } label: {
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    Button { showsHistory = true } label: { Image(systemName: "clock.arrow.circlepath") }
+                        .accessibilityLabel("历史会话")
+                        .disabled(agent.working || agent.committing || agent.changingConversation || loadingPhoto)
+
+                    Button(action: startNewConversation) {
                         Image(systemName: "square.and.pencil")
                     }
                     .accessibilityLabel("新建会话")
@@ -56,16 +61,21 @@ struct QinglongAgentSheet: View {
         .onDisappear { agent.saveComposerDraft() }
         .onChange(of: scenePhase) { _, phase in if phase != .active { agent.saveComposerDraft() } }
         .onChange(of: store.revision) { _, _ in
+            showsHistory = false
             selectedPhotos = []; expandedThinking = []; selectedTool = nil; editing = nil
             agent.restoreConversation()
             scrollFollowing = ConversationScrollFollowing()
             scrollPosition = ScrollPosition(edge: .bottom)
         }
-        .alert("新建会话", isPresented: $confirmsNewConversation) {
-            Button("取消", role: .cancel) {}
-            Button("新建会话", role: .destructive, action: startNewConversation)
-        } message: {
-            Text("开始新会话会清空当前对话，并放弃未发送的消息和待确认的操作预览。")
+        .sheet(isPresented: $showsHistory) {
+            AssistantHistorySheet(name: "青龙助手",
+                entries: { try await agent.historyEntries() }, messages: { try await agent.historyMessages($0) }, resume: { id in
+                    guard await agent.openHistory(id) else { return false }
+                    selectedPhotos = []; expandedThinking = []; composing = false
+                    scrollFollowing = ConversationScrollFollowing()
+                    scrollPosition = ScrollPosition(edge: .bottom)
+                    return true
+                })
         }
         .photosPicker(isPresented: $showsPhotos, selection: $selectedPhotos,
                       maxSelectionCount: photoSelectionLimit,
@@ -234,19 +244,21 @@ struct QinglongAgentSheet: View {
             }
             ForEach(previewKeys(proposal), id: \.self) { key in
                 VStack(alignment: .leading, spacing: 5) {
-                    Text(key == "enabled" && proposal.action.resource == .tasks ? "自动执行" : QinglongAgentAction.fieldTitle(key)).font(.caption).foregroundStyle(.secondary)
+                    Text(key == "enabled" && proposal.action.resource == .tasks ? "自动执行" : key == "url" && proposal.editingFields["type"] == QinglongSubscription.file ? "文件地址（Raw）" : QinglongAgentAction.fieldTitle(key)).font(.caption).foregroundStyle(.secondary)
                     if let old = proposal.originalContent, key == "content" {
                         DisclosureGroup("原文件") {
                             Text(verbatim: old).font(.caption.monospaced()).textSelection(.enabled)
                         }
                     } else if let old = proposal.item?.raw[key].text, !old.isEmpty, old != proposal.editingFields[key] {
-                        Text("原值：" + (key == "value" ? "[已隐藏]" : old)).font(.caption).foregroundStyle(.secondary)
+                        Text("原值：" + (key == "value" ? "[已隐藏]" : key == "type" ? QinglongSubscription.title(old) : old)).font(.caption).foregroundStyle(.secondary)
                     }
                     if key == "value" {
                         SecureField("新变量值", text: .constant(proposal.editingFields[key] ?? "")).disabled(true)
                         DisclosureGroup("核对新变量值") {
                             Text(verbatim: proposal.editingFields[key] ?? "").font(.caption.monospaced()).textSelection(.enabled)
                         }
+                    } else if key == "type" {
+                        Text(QinglongSubscription.title(proposal.editingFields[key] ?? ""))
                     } else if key == "enabled" {
                         Text(proposal.editingEnabled ? "开启" : "关闭")
                     } else {
@@ -294,7 +306,7 @@ struct QinglongAgentSheet: View {
 
     private func previewKeys(_ proposal: QinglongAgentProposal) -> [String] {
         guard proposal.action.editable else { return [] }
-        let order = ["name", "command", "url", "alias", "schedule", "value", "remarks", "branch", "whitelist", "blacklist", "filename", "directory", "content"]
+        let order = ["type", "name", "command", "url", "alias", "schedule", "value", "remarks", "branch", "whitelist", "blacklist", "filename", "directory", "content"]
         let keys = order.filter { proposal.editingFields[$0] != nil }
         return keys + ([QinglongResource.tasks, .envs].contains(proposal.action.resource) ? ["enabled"] : [])
     }
@@ -332,16 +344,18 @@ struct QinglongAgentSheet: View {
     private var hasUnsentMessage: Bool { !message.isEmpty || !attachments.isEmpty || loadingPhoto }
 
     private var canStartNewConversation: Bool {
-        !agent.working && !agent.committing &&
+        !agent.changingConversation && !loadingPhoto && !agent.working && !agent.committing &&
             (!agent.messages.isEmpty || agent.proposal != nil || agent.error != nil || agent.storageIssue != nil || hasUnsentMessage)
     }
 
     private func startNewConversation() {
-        guard canStartNewConversation, agent.startNewConversation() else { return }
-        message = ""
-        attachments = []
-        selectedPhotos = []
-        composing = false
+        guard canStartNewConversation else { return }
+        Task {
+            guard await agent.startNewConversation() else { return }
+            selectedPhotos = []; expandedThinking = []; composing = false
+            scrollFollowing = ConversationScrollFollowing()
+            scrollPosition = ScrollPosition(edge: .bottom)
+        }
     }
 
     private func shortcut(_ title: String, action: @escaping () -> Void) -> some View {

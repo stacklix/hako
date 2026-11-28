@@ -65,6 +65,7 @@ import Combine
         }
     }
     private var eventStream: Task<Void, Error>?
+    private var catalogRefresh: Task<Void, Never>?
     private var eventCursor: Int64 = 0
     private var observedTerminal: String?
     private var hasMoreEvents = false
@@ -80,9 +81,11 @@ import Combine
         }
     }
     private var historyCursorVerified = false
+    private var refreshingAccess = false
     var networkVisible = false {
         didSet {
             if networkVisible && !oldValue {
+                prepareForDisplay()
                 schedulePresentation()
                 Task { await refreshThreadAccess() }
             }
@@ -94,7 +97,10 @@ import Combine
         hasVerifiedSync || (threadId == nil && !models.isEmpty && modelError == nil)
     }
     var needsConnectionRecovery: Bool {
-        connectionIssue != nil || uncertain || operation?.resultUnconfirmed == true
+        connectionIssue != nil
+    }
+    var checkingConnection: Bool {
+        connectionIssue == nil && (restoringCache || synchronizing || !connectionVerified)
     }
     var presentedError: String? {
         if let operation { return operation.errorCardMessage(error) }
@@ -124,6 +130,7 @@ import Combine
         access = session?.access
         isArchived = archived
         threadId = session.flatMap { UUID(uuidString: $0.id) == nil ? nil : $0.id }
+        if archived, let threadId { store.markSessionCacheArchived(agentID: agent.id, threadID: threadId) }
         receipt = store.receipt(for: session, agent: agent)
         operationId = session?.operationId ?? receipt?.id
         if let receipt, receipt.id == operationId, receipt.state == "pending" {
@@ -237,6 +244,7 @@ import Combine
 
     private func composerChanged() {
         guard !resettingComposer else { return }
+        if !photos.isEmpty || editingMessageID != nil { composerInput.dismissPrediction() }
         if draftReady { draftSendingID = nil }
         persistDraft()
     }
@@ -290,7 +298,9 @@ import Combine
     }
 
     private func refreshThreadAccess() async {
-        guard let threadId, scope == store.scope else { return }
+        guard let threadId, scope == store.scope, !Task.isCancelled, !refreshingAccess else { return }
+        refreshingAccess = true
+        defer { refreshingAccess = false }
         do {
             let value: WorkshopThreadAccess = try await store.call(agent, "thread.access.read",
                 ["threadId": threadId, "applicationId": application.id])
@@ -316,13 +326,29 @@ import Combine
         return nil
     }
     var canConfigure: Bool { configurationUnavailableReason == nil }
-    var awaitingSubmissionCheck: Bool { restoringCache || synchronizing || (uncertain && outbox.activeID == nil) }
+    var awaitingSubmissionCheck: Bool {
+        restoringCache || (synchronizing && !connectionVerified) || (uncertain && outbox.activeID == nil)
+    }
     private var threadWritable: Bool { threadId == nil || (access?.canSend ?? true) }
     var canSubmitMessage: Bool { canCompose && !awaitingSubmissionCheck && threadWritable }
+    var composerPrediction: WorkshopInputPrediction? {
+        guard canSubmitMessage, operation?.state == "completed", photos.isEmpty, editingMessageID == nil,
+              !busy, !synchronizing, !uncertain else { return nil }
+        return composerInput.prediction
+    }
+
+    func acceptComposerPrediction() {
+        guard composerPrediction != nil else { return }
+        composerInput.acceptPrediction()
+    }
     var canEditMessages: Bool { canSubmitMessage && !busy && !hasMoreEvents }
     var hasDraftInput: Bool { !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !photos.isEmpty ||
         (editingMessageID != nil && followups.contains { $0.id == editingMessageID && !$0.imageIds.isEmpty }) }
-    var canRetry: Bool { threadWritable && !isArchived && !restoringCache && uncertain && receipt?.id == operationId && receipt?.state == "pending" && !busy && !synchronizing && operation?.active != true }
+    var canRetry: Bool {
+        guard let receipt, receipt.id == operationId, receipt.state == "pending",
+              outbox.states[receipt.id]?.awaitingRetry == true else { return false }
+        return threadWritable && !isArchived && !restoringCache && uncertain && !busy && !synchronizing && operation?.active != true
+    }
     var generation: WorkshopGenerationSettings { .displayed(history: historyGeneration, operation: operation) }
     var modelLabel: String {
         let id = generation.model ?? choice.model
@@ -348,6 +374,7 @@ import Combine
     }
 
     func prepareForReentry(_ session: WorkshopSession) {
+        prepareForDisplay()
         observeAccess(session.access)
         if WorkshopWatchStep.catalogNeedsSynchronization(previous: catalogHint, current: session,
             operationId: operationId, operationActive: operation?.active == true, completionId: latestCompletionID) {
@@ -356,6 +383,16 @@ import Combine
             eventStream?.cancel()
         }
         catalogHint = session
+    }
+
+    func prepareForDisplay() {
+        guard scope == store.scope else { return }
+        // A previous failure is still a reason to reconcile, but is not a new
+        // connection failure on this visit. Keep receipts and uncertain results.
+        if connectionIssue != nil {
+            connectionIssue = nil
+            needsHistoryRefresh = true
+        }
     }
 
     var canCompact: Bool {
@@ -560,11 +597,11 @@ import Combine
 
     func watch() async {
         let accessWatch = Task { await watchAccess() }
-        defer { accessWatch.cancel() }
+        defer { accessWatch.cancel(); catalogRefresh?.cancel(); catalogRefresh = nil }
         await restoreTranscript()
         guard !Task.isCancelled, scope == store.scope else { return }
         let entryStep = WorkshopWatchStep.onEntry(lastVerifiedAt: lastVerifiedAt,
-            operationId: operationId, observedTerminal: observedTerminal,
+            operationId: operationId, observedTerminal: operation?.waitingForPrediction == true ? nil : observedTerminal,
             needsRecovery: needsHistoryRefresh || connectionIssue != nil || uncertain, busy: busy || synchronizing || outbox.holdsOperation(operationId))
         if entryStep == .synchronize { await synchronize() }
         // A completed/external conversation only needs its latest history page;
@@ -573,7 +610,7 @@ import Combine
         var failures = 0
         var idleChecks = 0
         while !Task.isCancelled, scope == store.scope {
-            switch WorkshopWatchStep.next(operationId: operationId, observedTerminal: observedTerminal,
+            switch WorkshopWatchStep.next(operationId: operationId, observedTerminal: operation?.waitingForPrediction == true ? nil : observedTerminal,
                 needsRecovery: needsHistoryRefresh || connectionIssue != nil || uncertain, busy: busy || synchronizing || outbox.holdsOperation(operationId)) {
             case .synchronize:
                 idleChecks = 0
@@ -587,7 +624,7 @@ import Combine
                             try Task.checkCancellation()
                             guard self.operationId == operationId else { throw CancellationError() }
                             try await self.accept(page, id: operationId)
-                            return self.observedTerminal != operationId
+                            return self.observedTerminal != operationId || page.operation.waitingForPrediction
                         }
                     }
                     eventStream = stream
@@ -654,8 +691,19 @@ import Combine
         }
     }
 
+    func discardCacheAfterArchive() {
+        isArchived = true
+        cacheLoad?.cancel(); cacheLoad = nil
+        eventStream?.cancel(); eventStream = nil
+        presentationTask?.cancel(); presentationTask = nil
+        draftReady = false // Keep any unsent draft already on disk; clearing the view must not overwrite it.
+        entries = []; artifacts = []; followups = []; streamText = [:]
+        photos = []; editingDraft = nil; receipt = nil; savedTranscript = nil
+        operation = nil; contextUsage = nil
+    }
+
     private func saveTranscript() {
-        guard !restoringCache, let threadId, scope == store.scope else { return }
+        guard !isArchived, !restoringCache, let threadId, scope == store.scope else { return }
         let snapshot = WorkshopTranscript(key: WorkshopTranscriptKey(agentId: agent.id, applicationId: application.id, threadId: threadId),
             entries: entries, artifacts: artifacts, followups: followups, historyCursor: historyCursor, operationId: operationId,
             eventCursor: eventCursor, streamText: streamText, savedAt: .now, contextUsage: contextUsage)
@@ -677,7 +725,7 @@ import Combine
         if operation != result.operation { operation = result.operation }
         contextUsage = .newest(contextUsage, result.operation.contextUsage)
         if result.operation.active, error != nil { error = nil }
-        if connectionIssue != nil { clearConnectionIssue() }
+        if connectionIssue != nil || syncFailureStarted != nil { clearConnectionIssue() }
         if uncertain { uncertain = false }
         if cachedAt != nil { cachedAt = nil }
         let nextFollowups = WorkshopFollowupState.merging(result.followups, into: followups)
@@ -723,20 +771,80 @@ import Combine
                 completionId: result.hasMore ? nil : result.operation.turnId, agent: agent, scope: scope)
         }
         if !result.operation.active && !result.hasMore {
+            let firstTerminalObservation = observedTerminal != id
             observedTerminal = id
             if result.operation.state == "completed" { latestCompletionID = result.operation.turnId; markLatestRead() }
             error = result.operation.message.flatMap { $0.isEmpty ? nil : $0 }
             entries = WorkshopTranscriptMerge.withoutRecoveredNotices(entries, operationId: id,
                 state: result.operation.state, followups: followups)
             saveTranscript()
-            if result.operation.state == "completed" || result.operation.state == "interrupted" { await loadHistory() }
-            await store.refresh()
+            if firstTerminalObservation {
+                if !loadingHistory, result.operation.state == "completed" || result.operation.state == "interrupted" {
+                    needsHistoryRefresh = true
+                }
+                // The conversation is already verified. Catalog I/O must not
+                // delay the foreground result or duplicate history in flight.
+                catalogRefresh?.cancel()
+                catalogRefresh = Task { [store, scope] in
+                    guard !Task.isCancelled, store.scope == scope else { return }
+                    await store.refresh()
+                }
+            }
         }
+        composerInput.receivePrediction(result.operation.prediction, sourceTurnId: result.operation.turnId,
+            ready: result.operation.state == "completed")
         resumePendingSends()
     }
 
     private func apply(_ event: WorkshopEntry) {
         WorkshopTranscriptMerge.apply(event, entries: &entries, streamText: &streamText)
+    }
+
+    func updateInlineAgents(_ snapshots: [WorkshopSubagent]) {
+        let byID = Dictionary(snapshots.map { ($0.id, $0) }, uniquingKeysWith: { _, latest in latest })
+        var updated = entries
+        for index in updated.indices {
+            guard let agents = updated[index].agents else { continue }
+            let entry = updated[index]
+            updated[index].agents = agents.map { activity in
+                guard let snapshot = byID[activity.agentId] else { return activity }
+                return activity.enriched(name: snapshot.name, state: snapshot.state, summary: snapshot.summary ?? "",
+                    turn: snapshot.turn, dispatchedAtMs: entry.startedAtMs, parentTurn: entry.turn,
+                    allowsActiveBinding: entry.turnId == operation?.turnId && operation?.active == true)
+            }
+        }
+        guard updated != entries else { return }
+        entries = updated
+        saveTranscript()
+    }
+
+    func restoreInlineAgentTasks() async {
+        guard scope == store.scope, let threadId else { return }
+        let missing = WorkshopAgentGroup.groups(in: entries).flatMap(\.rows).filter { $0.activity.task.isEmpty }.suffix(8)
+        for row in missing {
+            guard !Task.isCancelled, scope == store.scope else { return }
+            do {
+                let page: WorkshopSubagentTaskPage = try await store.call(agent, "subagent.task.read", ["threadId": threadId,
+                    "applicationId": application.id, "agentId": row.activity.agentId, "messageIds": Array(row.sources.suffix(32))])
+                guard !Task.isCancelled, scope == store.scope else { return }
+                updateInlineAgentInstructions(WorkshopSubagentTaskPage.messages(page.entries))
+            } catch is CancellationError { return }
+            catch { /* The task card remains usable and an explicit detail read can retry. */ }
+        }
+    }
+
+    func updateInlineAgentInstructions(_ messages: [WorkshopSubagentTaskPage.Message]) {
+        var updated = entries
+        for message in messages {
+            guard let index = updated.firstIndex(where: { $0.id == message.id }), let agents = updated[index].agents else { continue }
+            updated[index].agents = agents.map { activity in
+                var result = activity
+                if result.task.isEmpty { result.task = String(message.text.prefix(300)) }
+                return result
+            }
+        }
+        guard updated != entries else { return }
+        entries = updated; saveTranscript()
     }
 
     func send() async { await sendInput(prompt: nil) }
@@ -860,7 +968,8 @@ import Combine
     }
 
     func canRetryDelivery(_ id: String) -> Bool {
-        guard threadWritable, !busy, scope == store.scope, !isArchived else { return false }
+        guard outbox.states[id]?.awaitingRetry == true,
+              threadWritable, !busy, scope == store.scope, !isArchived else { return false }
         if receipt?.id == id { return canRetry }
         guard !uncertain, let operationId else { return false }
         return store.pendingQueue(operationId: operationId).first?.id == id
@@ -928,7 +1037,7 @@ import Combine
             try await poll(result.id)
         } catch is CancellationError {
             if !accepted, outbox.states[receipt.id] != nil, scope == store.scope {
-                outbox.failed(receipt.id, message: submitted ? "发送结果待确认，请检查结果或重试原消息。" : "上传已取消，文字和图片已保留。", submitted: submitted)
+                outbox.failed(receipt.id, message: submitted ? "发送结果待确认，正在核对原消息。" : "上传已取消，文字和图片已保留。", submitted: submitted)
             }
         }
         catch let failure as WorkshopFailure where ["invalid_params", "codex_application_missing", "codex_workspace_invalid", "codex_busy", "codex_image_missing", "codex_image_invalid", "codex_thread_occupied", "codex_thread_access_unknown"].contains(failure.code) {
@@ -950,10 +1059,9 @@ import Combine
     }
 
     private func readFailed(_ failure: Error) {
-        guard !Task.isCancelled, scope == store.scope else { return }
+        guard !Task.isCancelled, scope == store.scope, !WorkshopReadIssue.isCancellation(failure) else { return }
         lastVerifiedAt = nil
         hasMoreEvents = false
-        if failure is CancellationError { return }
         syncFailureStarted = syncFailureStarted ?? .now
         syncFailureCount += 1
         let code = WorkshopSocketDiagnostics.error(failure)
@@ -1023,7 +1131,7 @@ import Combine
             try await poll(queued.operationId)
         } catch is CancellationError {
             if !accepted, outbox.states[queued.id] != nil, scope == store.scope {
-                outbox.failed(queued.id, message: submitted ? "排队结果待确认，请检查结果或重试原消息。" : "上传已取消，文字和图片已保留。", submitted: submitted)
+                outbox.failed(queued.id, message: submitted ? "排队结果待确认，正在核对原消息。" : "上传已取消，文字和图片已保留。", submitted: submitted)
             }
         }
         catch let failure as WorkshopFailure where ["invalid_params", "codex_queue_full", "codex_image_missing", "codex_image_invalid", "codex_thread_occupied", "codex_thread_access_unknown"].contains(failure.code) {

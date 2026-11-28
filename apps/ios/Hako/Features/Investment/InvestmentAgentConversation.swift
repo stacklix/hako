@@ -33,11 +33,16 @@ struct InvestmentAgentConversation: Codable {
     }
 
     struct Message: Identifiable, Codable {
+        struct Receipt: Codable {
+            let buyItemIndices: [Int]
+        }
+
         var id = UUID()
         let text: String
         let isUser: Bool
         var images: [Data] = []
         var html: AssistantHTML? = nil
+        var receipt: Receipt? = nil
 
         /// Preserve the confirmed fields in the existing conversation message, independently of the live ledger.
         static func recorded(_ proposal: InvestmentAgentProposal, at date: Date = .now) -> Self {
@@ -68,7 +73,13 @@ struct InvestmentAgentConversation: Codable {
                 }
             }
             html += "</section>"
-            return .init(text: text, isUser: false, html: AssistantHTML(html))
+            let buys = preview.items.indices.filter { index in
+                let item = preview.items[index]
+                return item.transaction && item.operation != .remove && item.groups.flatMap(\.fields).contains {
+                    $0.id == "event_type" && $0.after == "买入"
+                }
+            }
+            return .init(text: text, isUser: false, html: AssistantHTML(html), receipt: .init(buyItemIndices: buys))
         }
 
         private static func escape(_ value: String) -> String {

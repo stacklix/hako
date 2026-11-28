@@ -240,11 +240,11 @@ enum WorkshopMessage {
         guard source[start...].hasPrefix("!["), !escaped(start, in: source) else { return nil }
         let labelStart = source.index(start, offsetBy: 2)
         guard let labelEnd = source[labelStart...].firstIndex(of: "]") else { return nil }
-        guard let destination = webDestination(at: source.index(after: labelEnd), in: source) else { return nil }
+        guard let destination = webDestination(at: source.index(after: labelEnd), in: source, allowsLocalImage: true) else { return nil }
         return (String(source[labelStart..<labelEnd]), destination.url, destination.end)
     }
 
-    private static func webDestination(at opening: String.Index, in source: String) -> (url: URL, end: String.Index)? {
+    private static func webDestination(at opening: String.Index, in source: String, allowsLocalImage: Bool = false) -> (url: URL, end: String.Index)? {
         guard opening < source.endIndex, source[opening] == "(" else { return nil }
         var cursor = source.index(after: opening)
         let urlStart = cursor
@@ -257,8 +257,12 @@ enum WorkshopMessage {
         guard depth == 0 else { return nil }
         let address = String(source[urlStart..<cursor])
         guard !address.contains(where: \.isWhitespace), let url = URL(string: address),
-              ["https", "http"].contains(url.scheme?.lowercased() ?? ""),
-              url.host?.isEmpty == false, url.user == nil, url.password == nil else { return nil }
+              url.user == nil, url.password == nil else { return nil }
+        let web = ["https", "http"].contains(url.scheme?.lowercased() ?? "") && url.host?.isEmpty == false
+        let drive = address.range(of: #"^/?[A-Za-z]:[/\\]"#, options: .regularExpression) != nil
+        let local = allowsLocalImage && (url.scheme == nil || url.isFileURL || drive)
+        // Project containment is checked by the view and independently by the Agent before any read.
+        guard web || local else { return nil }
         return (url, source.index(after: cursor))
     }
 

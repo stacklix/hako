@@ -1,6 +1,73 @@
 import Foundation
 
 @main struct WorkshopModelTests {
+    static func predictions() {
+        let prediction = WorkshopInputPrediction(sourceTurnId: "latest", text: "查看修改")
+        var state = WorkshopComposerPrediction()
+        state.receive(prediction, sourceTurnId: "latest", ready: false)
+        precondition(state.suggestion == nil, "Running turns must not show a suggestion")
+        state.receive(prediction, sourceTurnId: "older", ready: true)
+        precondition(state.suggestion == nil, "A suggestion cannot cross turn boundaries")
+        state.receive(prediction, sourceTurnId: "latest", ready: true)
+        precondition(state.suggestion == prediction)
+        state.dismiss()
+        state.receive(prediction, sourceTurnId: "latest", ready: true)
+        precondition(state.suggestion == nil, "Sync must not restore an accepted or dismissed suggestion")
+        state.receive(.init(sourceTurnId: "next", text: "继续检查"), sourceTurnId: "next", ready: true)
+        precondition(state.suggestion?.text == "继续检查", "A new turn can provide a fresh suggestion")
+        state.receive(nil, sourceTurnId: "next", ready: true)
+        precondition(state.suggestion == nil, "No suggestion is a normal outcome")
+    }
+    static func inlineAgents() throws {
+        let native = WorkshopTurn(id: "child-turn", state: "completed", startedAt: 1000, completedAt: 1128, durationMs: 128000)
+        let task = WorkshopAgentActivity(agentId: "child", name: "Pascal", action: "spawnAgent", task: "检查版本", state: "starting", summary: "")
+        let entry = WorkshopEntry(kind: "subagents", id: "dispatch", text: "", role: "", state: "", truncated: false,
+            turnId: "parent-turn", startedAtMs: 1000000, agents: [task])
+        var completed = entry
+        completed.agents = [task.enriched(name: "Pascal", state: "completed", summary: "检查通过", turn: native,
+            dispatchedAtMs: entry.startedAtMs, parentTurn: nil, allowsActiveBinding: false)]
+        let group = WorkshopAgentGroup.groups(in: [entry, completed])[0]
+        precondition(group.anchorID == "agents-parent-turn" && group.rows.count == 1 && group.completedCount == 1)
+        precondition(group.rows[0].elapsed(at: .distantFuture) == "2m 8s")
+        precondition(group.rows[0].sources == ["dispatch"], "Replayed dispatches must not duplicate task cards")
+        var reused = entry; reused.turnId = "new-parent-turn"
+        let groups = WorkshopAgentGroup.groups(in: [entry, reused])
+        precondition(groups.count == 2 && groups[0].rows[0].id != groups[1].rows[0].id, "Reused children remain scoped to their parent round")
+        let newer = WorkshopTurn(id: "another-turn", state: "inProgress", startedAt: 1200, completedAt: nil, durationMs: nil)
+        let old = completed.agents![0]
+        let unchanged = old.enriched(name: "Pascal", state: "running", summary: "新任务", turn: newer,
+            dispatchedAtMs: entry.startedAtMs, parentTurn: nil, allowsActiveBinding: true)
+        precondition(unchanged == old, "A later child turn cannot replace an existing task's result or duration")
+        let stale = task.enriched(name: "Pascal", state: "completed", summary: "旧结果", turn: native,
+            dispatchedAtMs: 1200000, parentTurn: nil, allowsActiveBinding: false)
+        precondition(stale.turn == nil && stale.summary.isEmpty, "Pre-dispatch child turns are unrelated")
+        let running = WorkshopTurn(id: "live", state: "inProgress", startedAt: 1000, completedAt: nil, durationMs: nil)
+        let activity = task.enriched(name: "Pascal", state: "running", summary: "验证中", turn: running,
+            dispatchedAtMs: nil, parentTurn: nil, allowsActiveBinding: true)
+        precondition(WorkshopAgentGroup.Row(id: "r", activity: activity, sources: []).elapsed(at: Date(timeIntervalSince1970: 1084)) == "1m 24s")
+        precondition(WorkshopAgentGroup.Row(id: "r", activity: task, sources: []).elapsed(at: .now) == nil,
+            "Missing native timing must not become a fabricated duration")
+        let restored = try JSONDecoder().decode(WorkshopEntry.self, from: JSONEncoder().encode(completed))
+        precondition(restored == completed, "Task snapshots survive transcript caching")
+    }
+    static func executionPlans() throws {
+        let steps = [WorkshopPlanStep(step: "检查", status: "completed"), WorkshopPlanStep(step: "测试", status: "inProgress")]
+        let entry = WorkshopEntry(kind: "plan", id: "plan-round", text: "验证代理", role: "", state: "", truncated: false, turnId: "round", plan: steps)
+        let operation = WorkshopOperation(id: "o", applicationId: "a", threadId: "t", turnId: "round", state: "running", message: nil, startedAt: 100)
+        let plan = WorkshopExecutionPlan.active(in: [entry], operation: operation)
+        precondition(plan?.completedCount == 1 && plan?.summary == "测试")
+        precondition(WorkshopExecutionPlan.active(in: [entry], operation: nil) == nil)
+        var next = entry; next.turnId = "another"
+        precondition(WorkshopExecutionPlan.active(in: [next], operation: operation) == nil, "Prior-turn plans cannot float in a new round")
+        var empty = entry; empty.plan = []
+        precondition(WorkshopExecutionPlan.active(in: [entry, empty], operation: operation) == nil, "An empty plan clears the current plan")
+        let terminal = WorkshopEntry(kind: "turn", id: "turn-round", text: "", role: "", state: "", truncated: false, turnId: "round",
+            turn: WorkshopTurn(id: "round", state: "completed", startedAt: 100, completedAt: 200, durationMs: nil))
+        precondition(WorkshopExecutionPlan.active(in: [entry, terminal], operation: operation) == nil, "A completed native turn hides its floating plan before polling catches up")
+        let restored = try JSONDecoder().decode(WorkshopEntry.self, from: JSONEncoder().encode(entry))
+        precondition(restored == entry)
+    }
+
     static func completedTurnFooters() throws {
         let turn = WorkshopTurn(id: "round", state: "completed", startedAt: 1800000000, completedAt: 1800000383, durationMs: 383250)
         let interim = WorkshopEntry(kind: "item", id: "progress", text: "Checking", role: "assistant", state: "completed", truncated: false,
@@ -29,6 +96,8 @@ import Foundation
 
     static func main() throws {
         try completedTurnFooters()
+        try executionPlans()
+        try inlineAgents()
         do {
         let timed = WorkshopEntry(kind: "item", id: "timed", text: "Reply", role: "assistant", state: "", truncated: false,
             turnId: "turn", startedAtMs: 1_800_000_000_125, completedAtMs: 1_800_000_028_875)
@@ -171,6 +240,17 @@ import Foundation
         precondition(WorkshopReadIssue.suppressesErrorCard(for: WorkshopFailure(code: "codex_operation_missing", message: "missing")))
         precondition(!WorkshopReadIssue.suppressesErrorCard(for: WorkshopFailure(code: "codex_workspace_invalid", message: "invalid")))
         precondition(!WorkshopReadIssue.suppressesErrorCard(for: URLError(.timedOut)))
+        precondition(WorkshopReadIssue.isCancellation(CancellationError()))
+        precondition(WorkshopReadIssue.isCancellation(URLError(.cancelled)))
+        precondition(!WorkshopReadIssue.isCancellation(URLError(.networkConnectionLost)))
+        precondition(WorkshopReadIssue.message(for: URLError(.cancelled)) == nil,
+            "Expected background suspension and navigation cancellation must not become connection failures")
+        for transport in [WorkshopConnectionState.disconnected, .reconnecting] {
+            precondition(transport.forConversation(verified: false, needsRecovery: false, checking: true) == .connecting,
+                "Normal cache restoration must show a neutral check instead of a stale disconnection")
+            precondition(transport.forConversation(verified: false, needsRecovery: true, checking: true) == transport,
+                "A fresh real connection failure must remain visible")
+        }
         for code in ["query_timeout", "process_unavailable", "process_disconnected", "computer_offline", "workshop_timeout", "workshop_busy", "workshop_disconnected", "codex_connection_closed", "stream_overflow"] {
             let failure = WorkshopFailure(code: code, message: "Raw internal message")
             let message = WorkshopReadIssue.message(for: failure)
@@ -199,12 +279,14 @@ import Foundation
         outbox.begin("first", images: true); outbox.sending("first")
         precondition(!outbox.holdsOperation("first"), "Once submitted, uncertain results must be checked on the server")
         outbox.failed("first", message: "Reply lost", submitted: true); outbox.finish("first")
+        precondition(outbox.states["first"]?.awaitingRetry == false,
+            "A lost acknowledgement must not offer retry before failure is confirmed")
         precondition(!outbox.holdsOperation("first") && outbox.nextQueued(["first", "second"]) == nil)
         outbox.acknowledge("first"); outbox.progress(0.8, id: "first")
         precondition(outbox.states["first"] == nil && outbox.nextQueued(["second"]) == "second",
             "Acknowledgement must finish the original row without resurrecting progress")
         outbox.restore("second")
-        precondition(outbox.nextQueued(["second"]) == nil && outbox.states["second"]?.awaitingRetry == true,
+        precondition(outbox.nextQueued(["second"]) == nil && outbox.states["second"]?.awaitingRetry == false,
             "Reopening must preserve uncertain requests without automatically resending them")
         let savedSend = WorkshopReceipt(id: "request", agentId: "agent", applicationId: "app", originalThreadId: nil,
             threadId: nil, title: "Session", message: "图片说明", createdAt: .now, state: "pending", imageIds: ["image-a", "image-b"])
@@ -787,6 +869,7 @@ import Foundation
         precondition(queuedRetry.parameters["operationId"] as? String == "original-operation")
         precondition(queuedRetry.parameters["reasoningEffort"] as? String == "high")
         precondition(queuedRetry.entry.role == "user" && queuedRetry.entry.state == "pending")
-        print("PASS: immediate new-session listing, catalog reconciliation, activity ordering, unread expiry and stable request identity")
+        predictions()
+        print("PASS: immediate new-session listing, catalog reconciliation, activity ordering, unread expiry, stable request identity and composer predictions")
     }
 }

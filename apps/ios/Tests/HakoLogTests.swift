@@ -12,7 +12,7 @@ private final class HTTPLogMockProtocol: URLProtocol, @unchecked Sendable {
             client?.urlProtocol(self, didFailWithError: URLError(.notConnectedToInternet))
             return
         }
-        let response = HTTPURLResponse(url: url, statusCode: 201, httpVersion: "HTTP/1.1", headerFields: [
+        let response = HTTPURLResponse(url: url, statusCode: url.path == "/restricted" ? 451 : 201, httpVersion: "HTTP/1.1", headerFields: [
             "Content-Type": "application/json", "X-Trace": "http-log-regression", "Set-Cookie": "session=private-cookie; Path=/"
         ])!
         let data = Data(#"{"result":"visible-result","refreshToken":"private-refresh","echo":"private-cookie private-dpop"}"#.utf8)
@@ -43,6 +43,7 @@ private final class HTTPLogMockProtocol: URLProtocol, @unchecked Sendable {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("hako-log-tests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
+        try await checkHangDiagnostics(at: root.appendingPathComponent("hangs.json"))
         let file = root.appendingPathComponent("events.json")
         let store = HakoLogStore(fileURL: file)
 
@@ -108,6 +109,27 @@ private final class HTTPLogMockProtocol: URLProtocol, @unchecked Sendable {
         print("Hako log URL redaction, credentials, persistence, retention, concurrency and clear checks passed")
     }
 
+    private static func checkHangDiagnostics(at file: URL) async throws {
+        let store = HakoLogStore(fileURL: file)
+        store.append(source: .hako, level: .warning, message: HakoHangLog.message, detail: "持续时间：3 秒\nstack-one", fullDetail: true)
+        store.append(source: .hako, level: .info, message: "ordinary-hako-event")
+        store.append(source: .codeWorkshop, level: .warning, message: HakoHangLog.message, detail: "ordinary-workshop-event")
+        store.append(source: .hako, level: .warning, message: HakoHangLog.message, detail: "持续时间：5 秒\nstack-two", fullDetail: true)
+        let snapshot = await store.snapshotAsync()
+        let reports = snapshot.entries.filter(HakoHangLog.includes)
+        precondition(reports.count == 2 && reports[0].detail.contains("stack-two"))
+        let exported = HakoLogExport.text(title: "卡顿诊断", entries: reports, version: "0.9.28")
+        precondition(exported.contains("stack-one") && exported.contains("stack-two"))
+        precondition(!exported.contains("ordinary-hako-event") && !exported.contains("ordinary-workshop-event"),
+                     "Hang export leaked unrelated logs")
+        await store.clearHangDiagnostics()
+        let remaining = await store.snapshotAsync()
+        precondition(remaining.entries.count == 2 && remaining.entries.allSatisfy { !HakoHangLog.includes($0) },
+                     "Clearing hang diagnostics removed unrelated logs")
+        let restored = await HakoLogStore(fileURL: file).snapshotAsync()
+        precondition(restored.entries.map(\.id) == remaining.entries.map(\.id), "Hang clearing was not durable")
+    }
+
     private static func checkHTTPLogs() async throws {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [HTTPLogMockProtocol.self]
@@ -127,6 +149,20 @@ private final class HTTPLogMockProtocol: URLProtocol, @unchecked Sendable {
         }
         for secret in ["private-query", "private-client", "private-dpop", "private-refresh", "private-cookie"] {
             precondition(!entry.text.contains(secret))
+        }
+        _ = try await HTTPTransport.data(for: request, using: session, logBody: false, logErrorBody: true)
+        let success = HakoLogStore.shared.snapshot().entries.first!
+        precondition(!success.detail.contains("visible-result") && !success.detail.contains("visible-request"),
+                     "Credential success payloads must remain excluded")
+        request.url = URL(string: "https://example.test/restricted?token=private-query")!
+        let (failureBody, failureResponse) = try await HTTPTransport.data(for: request, using: session,
+            secrets: ["private-client"], logBody: false, logErrorBody: true)
+        precondition((failureResponse as? HTTPURLResponse)?.statusCode == 451 && !failureBody.isEmpty)
+        let failure = HakoLogStore.shared.snapshot().entries.first!
+        precondition(failure.detail.contains("visible-result") && !failure.detail.contains("visible-request"),
+                     "Error response bodies must be logged even when request bodies are excluded")
+        for secret in ["private-query", "private-client", "private-dpop", "private-refresh", "private-cookie"] {
+            precondition(!failure.text.contains(secret), "Error bodies must still redact credentials")
         }
         var redactor = HTTPLogRedactor(request: request, secrets: [])
         let mixed = Data(#"{"tokens":[{"symbol":"TRX","balance":"123.45","access_token":"private-asset-token"}],"login":{"tokens":["private-token-list"]}}"#.utf8)

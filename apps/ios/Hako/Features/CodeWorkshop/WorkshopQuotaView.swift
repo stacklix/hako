@@ -9,11 +9,28 @@ import SwiftUI
     private var refreshID = UUID()
     private var expiration: Task<Void, Never>?
     @Published var displayedAt = Date.now
+    @Published private(set) var usage: WorkshopUsageSnapshot?
+    @Published private(set) var usageIdentity = ""
+    @Published private(set) var usageFetching = false
+    @Published private(set) var usageError: String?
+    private var usageRequest = UUID()
 
-    func prepareManualRefresh() {
-        refreshID = UUID()
-        fetching = true
-        display(nil)
+    func refreshUsage(store: WorkshopStore, agent: WorkshopAgent) async {
+        let ticket = store.scope, identity = store.scope + "|" + agent.id
+        guard !Task.isCancelled, !usageFetching || usageIdentity != identity else { return }
+        let request = UUID()
+        usageRequest = request
+        if usageIdentity != identity { usage = nil }
+        usageIdentity = identity; usageError = nil; usageFetching = true
+        defer { if usageRequest == request { usageFetching = false } }
+        do {
+            let result = try await store.codexUsage(agent)
+            guard !Task.isCancelled, ticket == store.scope, usageRequest == request else { return }
+            usage = result
+        } catch {
+            guard !Task.isCancelled, ticket == store.scope, usageRequest == request else { return }
+            usageError = error.localizedDescription
+        }
     }
 
     func refresh(store: WorkshopStore, agent: WorkshopAgent, clearCache: Bool) async {
@@ -64,82 +81,4 @@ import SwiftUI
     }
 
     deinit { expiration?.cancel() }
-}
-
-@MainActor struct WorkshopQuotaView: View, Equatable {
-    let store: WorkshopStore
-    let agent: WorkshopAgent
-    @ObservedObject var state: WorkshopQuotaState
-    private let scope: String
-    private let stateIdentity: ObjectIdentifier
-
-    init(store: WorkshopStore, agent: WorkshopAgent, state: WorkshopQuotaState) {
-        self.store = store; self.agent = agent; self.state = state
-        scope = store.scope
-        stateIdentity = ObjectIdentifier(state)
-    }
-
-    nonisolated static func == (left: Self, right: Self) -> Bool {
-        left.store === right.store && left.agent == right.agent && left.stateIdentity == right.stateIdentity && left.scope == right.scope
-    }
-
-    var body: some View {
-        let identity = store.settingsAccount + "|" + agent.id
-        let snapshot = state.identity == identity ? state.cached?.snapshot(at: state.displayedAt) : nil
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Codex 额度").font(.subheadline.weight(.semibold))
-            VStack(alignment: .leading, spacing: 5) {
-                if let snapshot, !snapshot.buckets.isEmpty {
-                    ForEach(snapshot.buckets) { bucket in
-                        if let window = bucket.primary { row(bucket, window: window, primary: true) }
-                        if let window = bucket.secondary { row(bucket, window: window, primary: false) }
-                    }
-                } else {
-                    Text(state.identity == identity && state.fetching ? "正在获取额度…" : "未知")
-                }
-            }
-            .font(.caption).foregroundStyle(.secondary)
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .padding(14).frame(maxWidth: .infinity, alignment: .leading)
-        .background(HakoStyle.card)
-        .overlay(alignment: .bottom) {
-            if let fraction = snapshot?.remainingFraction(at: state.displayedAt) {
-                GeometryReader { geometry in
-                    ZStack(alignment: .leading) {
-                        HakoStyle.adaptive(0xeef4f1, 0x2a302e)
-                        Color.green
-                            .frame(width: geometry.size.width * CGFloat(fraction))
-                    }
-                }
-                .frame(height: 2)
-                .clipShape(Capsule())
-                .padding(.horizontal, 14)
-                .accessibilityHidden(true)
-            }
-        }
-        .clipShape(RoundedRectangle(cornerRadius: 12))
-        .contentShape(Rectangle())
-    }
-
-    private func row(_ bucket: WorkshopQuotaBucket, window: WorkshopQuotaWindow, primary: Bool) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            if bucket.title != "Codex" {
-                Text(bucket.title + (window.windowDurationMins == 10080 ? "" : " · " + window.periodLabel(primary: primary)))
-                    .lineLimit(1).minimumScaleFactor(0.85)
-            } else if window.windowDurationMins != 10080 {
-                Text(window.periodLabel(primary: primary))
-                    .lineLimit(1).minimumScaleFactor(0.85)
-            }
-            HStack(spacing: 8) {
-                Text(window.remaining(at: state.displayedAt).map { "剩余 " + $0.formatted(.number.precision(.fractionLength(0...1))) + "%" } ?? "剩余 —")
-                    .fontWeight(.medium)
-                Spacer(minLength: 0)
-                Text(window.countdown(at: state.displayedAt))
-            }
-            .monospacedDigit().lineLimit(1).minimumScaleFactor(0.85)
-        }
-        .accessibilityElement(children: .combine)
-    }
-
 }

@@ -1,8 +1,18 @@
 import Foundation
 
 enum InvestmentPrecision {
+    static let unitPriceScale = 4
+    enum InputRule: Equatable {
+        case amount, unitPrice
+
+        static func price(for kind: InvestmentKind?) -> Self {
+            kind?.usesUnitPrice == true ? .unitPrice : .amount
+        }
+    }
+
     static func scale(for value: Decimal, exchangeRate: Bool = false, unitPrice: Bool = false) -> Int {
-        guard !exchangeRate && !unitPrice else { return 4 }
+        if unitPrice { return unitPriceScale }
+        if exchangeRate { return 4 }
         var input = value < 0 ? -value : value, twoPlaces = Decimal(), integer = Decimal()
         NSDecimalRound(&twoPlaces, &input, 2, .down)
         NSDecimalRound(&integer, &input, 0, .down)
@@ -19,11 +29,28 @@ enum InvestmentPrecision {
         NSDecimalNumber(decimal: rounded(value, exchangeRate: exchangeRate, unitPrice: unitPrice)).stringValue
     }
 
-    static func validateInput(_ value: Decimal, field: String, unitPrice: Bool = false) throws {
-        guard rounded(value, unitPrice: unitPrice) == value else {
-            if unitPrice { throw InvestmentError.invalid(field + "最多保留 4 位小数。请修改输入，系统不会自动舍入。") }
-            throw InvestmentError.invalid(field + "超出允许精度：通常最多 2 位小数，绝对值小于 0.01 时最多 4 位。请修改输入，系统不会自动舍入。")
+    static func inputMessage(field: String, rule: InputRule) -> String {
+        if rule == .unitPrice { return field + "最多保留 \(unitPriceScale) 位小数。请修改输入，系统不会自动舍入。" }
+        return field + "超出允许精度：通常最多 2 位小数，绝对值小于 0.01 时最多 4 位。请修改输入，系统不会自动舍入。"
+    }
+
+    static func validateInput(_ value: Decimal, field: String, rule: InputRule = .amount) throws {
+        guard rounded(value, unitPrice: rule == .unitPrice) == value else {
+            throw InvestmentError.invalid(inputMessage(field: field, rule: rule))
         }
+    }
+
+    static func parseInput(_ input: String, field: String, allowZero: Bool = false,
+                           preservesPrecision: Bool = false, rule: InputRule = .amount) throws -> Decimal {
+        let separator = Locale.current.decimalSeparator ?? "."
+        let value = input.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: separator, with: ".")
+        guard value.range(of: #"^(?:[0-9]+(?:\.[0-9]+)?|\.[0-9]+)$"#, options: .regularExpression) != nil,
+              let decimal = exactInput(value), decimal <= 1_000_000_000_000,
+              allowZero ? decimal >= 0 : decimal > 0 else {
+            throw InvestmentError.invalid("请输入有效的" + field + "。")
+        }
+        if !preservesPrecision { try validateInput(decimal, field: field, rule: rule) }
+        return decimal
     }
 
     static func exactInput(_ text: String) -> Decimal? {
@@ -517,6 +544,14 @@ struct InvestmentTradingCalendar: Codable, Equatable, Sendable {
         return nil
     }
 
+    /// Daily bars are requested only after the session's local calendar day has ended.
+    static func lastDailyQuoteDay(_ calendars: [Self], market: String, now: Date) -> Date? {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = formatter(market: market).timeZone
+        let previousDayEnd = calendar.startOfDay(for: now).addingTimeInterval(-1)
+        return lastClosed(calendars, market: market, now: previousDayEnd)
+    }
+
     static func isOpen(_ calendars: [Self], market: String, now: Date) -> Bool {
         let date = formatter(market: market).string(from: now)
         return (sessions(calendars, market: market, date: date) ?? []).contains { session in
@@ -916,6 +951,10 @@ struct InvestmentBook: Codable {
 
     var earliest: Date? { accounts.compactMap(\.earliest).min() }
     func account(_ id: UUID) -> InvestmentAccount? { accounts.first { $0.id == id } }
+
+    func plans(for accountID: UUID) -> [InvestmentPlan] {
+        plans.filter { $0.accountID == accountID }
+    }
     func asset(_ id: UUID?) -> InvestmentAsset? { id.flatMap { assets[$0] } }
 
     mutating func register(_ asset: InvestmentAsset) throws -> UUID {

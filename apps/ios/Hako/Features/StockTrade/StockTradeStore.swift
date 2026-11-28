@@ -18,6 +18,7 @@ extension StockTradeLoginStart {
     @Published private(set) var pool: StockTradePool = .recommendations
     @Published private(set) var loading = false
     @Published private(set) var authenticating = false
+    @Published private var initialActivationPending = true
     @Published private(set) var error: String?
     @Published private(set) var updatedAt: Date?
     @Published private(set) var favorites: [StockTradeRecord] = []
@@ -65,6 +66,17 @@ extension StockTradeLoginStart {
     }
 
     var configured: Bool { (try? connection.normalized()) != nil }
+    var entryState: StockTradeEntryState {
+        .resolve(configured: configured, hasSession: session != nil, hasSnapshot: run != nil,
+                 initialActivationPending: initialActivationPending, busy: authenticating || loading,
+                 hasError: error != nil, explicitlyLoggedOut: explicitlyLoggedOut)
+    }
+    var preparingInitialContent: Bool {
+        entryState == .loading
+    }
+    var resultsState: StockTradeResultsState {
+        .resolve(hasSnapshot: run != nil, busy: loading, missingSnapshot: missingSnapshot, hasError: error != nil)
+    }
     var scope: UUID { epoch }
     var activationKey: String { connection.origin + "|" + connection.clientID + "|" + context }
     var preferenceKey: String? { favoriteKey.map { $0 + ".notifications" } }
@@ -77,6 +89,7 @@ extension StockTradeLoginStart {
         renewalTask?.cancel(); renewalTask = nil
         epoch = UUID(); pending = nil; consent = nil; session = nil; run = nil
         rows = []; nextCursor = nil; favorites = []; updatedAt = nil; loading = false; authenticating = false; error = nil
+        initialActivationPending = true
         workflowTasks = []; workflowCursor = nil; workflowOnline = false; workflowError = nil; workflowsLoading = false; displayedRunID = nil; resultGeneration = UUID(); missingSnapshot = false
     }
     private static func identityContext(_ authentication: any AuthenticatedServerAccess) -> String {
@@ -155,12 +168,12 @@ extension StockTradeLoginStart {
         catch { throw StockTradeFailure.invalidResponse }
     }
     private func raw<T: Decodable>(_ path: [String], query: [URLQueryItem] = [], method: String = "GET",
-                                   body: [String: String]? = nil, token: String? = nil, as: T.Type) async throws -> T {
+                                   body: [String: String]? = nil, payload: Data? = nil, token: String? = nil, as: T.Type) async throws -> T {
         let data = try await backend().data(path, query: query, method: method,
-            body: try body.map { try JSONEncoder().encode($0) }, token: token)
+            body: try payload ?? body.map { try JSONEncoder().encode($0) }, token: token)
         return try decode(T.self, data)
     }
-    func read<T: Decodable>(_ path: [String], query: [URLQueryItem] = [], method: String = "GET", body: [String: String]? = nil, as: T.Type) async throws -> T {
+    func read<T: Decodable>(_ path: [String], query: [URLQueryItem] = [], method: String = "GET", body: [String: String]? = nil, payload: Data? = nil, as: T.Type) async throws -> T {
         synchronizeContext()
         let ticket = epoch
         guard var current = session else { throw StockTradeFailure.sessionRequired }
@@ -170,12 +183,12 @@ extension StockTradeLoginStart {
                 didRenew = true; current = try await renewed(current, ticket: ticket)
             }
             do {
-                let value: T = try await raw(path, query: query, method: method, body: body, token: current.accessToken, as: T.self)
+                let value: T = try await raw(path, query: query, method: method, body: body, payload: payload, token: current.accessToken, as: T.self)
                 try checked(ticket)
                 return value
             } catch let failure as StockTradeFailure where failure.invalidatesSession && !didRenew {
                 current = try await renewed(current, ticket: ticket)
-                let value: T = try await raw(path, query: query, method: method, body: body, token: current.accessToken, as: T.self)
+                let value: T = try await raw(path, query: query, method: method, body: body, payload: payload, token: current.accessToken, as: T.self)
                 try checked(ticket)
                 return value
             }
@@ -191,6 +204,8 @@ extension StockTradeLoginStart {
         synchronizeContext()
         guard configured else { error = configurationError; return }
         guard !explicitlyLoggedOut, !authenticating, !loading, consent == nil, pending == nil else { return }
+        let ticket = epoch
+        defer { if ticket == epoch { initialActivationPending = false } }
         if session == nil || session?.valid == false { await login(); return }
         if force || updatedAt.map({ Date.now.timeIntervalSince($0) >= 60 }) != false { await refresh() }
     }
@@ -200,7 +215,7 @@ extension StockTradeLoginStart {
         guard !authenticating else { return }
         authenticating = true; error = nil; explicitlyLoggedOut = false
         let ticket = epoch
-        defer { if ticket == epoch { authenticating = false } }
+        defer { if ticket == epoch { authenticating = false; initialActivationPending = false } }
         do {
             _ = try connection.normalized()
             var stored = session
@@ -397,9 +412,10 @@ extension StockTradeLoginStart {
         return task
     }
 
-    func submitWorkflow(kind: StockTradeWorkflowKind, dataDate: String?, requestID: String) async throws -> StockTradeWorkflowTask {
+    func submitWorkflow(kind: StockTradeWorkflowKind, dataDate: String?, requestID: String, strategyRevision: String? = nil) async throws -> StockTradeWorkflowTask {
         var body = ["kind": kind.rawValue, "requestId": requestID]
         if let dataDate { body["dataDate"] = dataDate }
+        if let strategyRevision { body["strategyRevision"] = strategyRevision }
         let task = try await read(["tasks"], method: "POST", body: body, as: StockTradeWorkflowTask.self).validated()
         guard task.kind == kind, task.dataDate == dataDate else { throw StockTradeFailure.invalidResponse }
         workflowTasks.removeAll { $0.id == task.id }; workflowTasks.insert(task, at: 0)

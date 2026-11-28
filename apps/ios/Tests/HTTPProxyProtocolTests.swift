@@ -27,7 +27,7 @@ private final class ProxyProbeClient: NSObject, URLProtocolClient, @unchecked Se
     var authenticated = true
     var logoutPending = false
     var requestContext = "original"
-    var version = "0.8.16"
+    var version = "0.9.5"
     var failure: String?
     var invalidate = false
     var stall = false
@@ -73,10 +73,14 @@ private final class ProxyProbeClient: NSObject, URLProtocolClient, @unchecked Se
         let (data, response) = try await session.data(for: request)
         precondition(data == Data([0, 255, 128]) && (response as? HTTPURLResponse)?.statusCode == 404)
         precondition(response.url == request.url && access.requests == 1)
-        access.version = "0.8.15"
-        do { _ = try await session.data(for: request); preconditionFailure("Old relay received a mutating request") } catch { }
-        precondition(access.requests == 1)
-        access.version = "0.8.16"
+        for version in ["0.8.16", "0.9.2", "0.10.0", "1.0.0", "0..9.5", "0.9.5.", "0.9.5-beta"] {
+            access.version = version
+            do { _ = try await HakoProxyURLProtocol.forward(request); preconditionFailure("Unsupported relay received a mutating request") } catch {
+                precondition(error.localizedDescription.contains(HakoServerCompatibility.serverWarning(for: version)!))
+            }
+            precondition(access.requests == 1, "Rejected version must not forward the request")
+        }
+        access.version = "0.9.5"
         access.failure = "Test target error"
         do { _ = try await session.data(for: request); preconditionFailure("Agent error lost") } catch {
             precondition(error.localizedDescription.contains("Test target error"))

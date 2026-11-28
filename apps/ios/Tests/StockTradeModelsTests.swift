@@ -1,7 +1,39 @@
 import Foundation
 
 @main struct StockTradeModelsTests {
+    static func entryStateChecks() {
+        func state(session: Bool = false, snapshot: Bool = false, pending: Bool = true,
+                   busy: Bool = false, error: Bool = false, loggedOut: Bool = false,
+                   configured: Bool = true) -> StockTradeEntryState {
+            .resolve(configured: configured, hasSession: session, hasSnapshot: snapshot,
+                     initialActivationPending: pending, busy: busy, hasError: error,
+                     explicitlyLoggedOut: loggedOut)
+        }
+        precondition(state() == .loading, "The first frame must not assume login is required")
+        precondition(state(session: true, busy: true) == .loading, "Restored credentials must not flash the first-run empty state")
+        precondition(state(session: true, pending: false, busy: true) == .loading, "A retry still needs an initial result")
+        precondition(state(session: true, snapshot: true, busy: true) == .content, "Keep an existing result visible during refresh")
+        precondition(state(session: true, pending: false) == .content, "A confirmed empty result must remain available")
+        precondition(state(pending: false) == .login, "An authentication attempt without a session must settle on login")
+        precondition(state(busy: true, error: true) == .login, "Authentication errors must not be hidden behind a loader")
+        precondition(state(session: true, busy: true, error: true) == .content, "Snapshot errors must be presented on the results page")
+        precondition(state(loggedOut: true) == .login, "Explicit logout must not reopen the startup loader")
+        precondition(state(configured: false) == .connection)
+
+        func results(snapshot: Bool = false, busy: Bool = false, missing: Bool = false,
+                     error: Bool = false) -> StockTradeResultsState {
+            .resolve(hasSnapshot: snapshot, busy: busy, missingSnapshot: missing, hasError: error)
+        }
+        precondition(results() == .loading, "Before the first read starts, absence of a result must not expose the start-screening button")
+        precondition(results(busy: true) == .loading, "The initial read must not expose a confirmed-empty action")
+        precondition(results(snapshot: true, busy: true) == .loaded, "Cached results must remain visible while refreshing")
+        precondition(results(missing: true, error: true) == .missing, "Only a confirmed unavailable snapshot offers first screening")
+        precondition(results(busy: true, missing: true) == .loading, "Retrying a previously empty result must hide the empty action until the response")
+        precondition(results(error: true) == .unavailable, "A network failure is not proof that no published result exists")
+        precondition(results(snapshot: true, error: true) == .loaded, "Refresh errors must retain a loaded publication")
+    }
     static func main() throws {
+        entryStateChecks()
         let decoder = JSONDecoder()
         func decoded<T: Decodable>(_ type: T.Type, _ text: String) throws -> T { try decoder.decode(type, from: Data(text.utf8)) }
         let missing = try decoded(StockTradeRecord.self, #"{"symbol":"600519.SH","rank_score":null,"risk_flags":[{"code":"risk","severity":"high"}]}"#)

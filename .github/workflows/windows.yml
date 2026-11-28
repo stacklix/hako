@@ -39,6 +39,7 @@ jobs:
       - run: dotnet run --project tests/Hako.Checks/Hako.Checks.csproj -c Release
       - run: dotnet run --project tests/Hako.Checks/Hako.Checks.csproj -c Release -- code-workshop
       - run: dotnet run --project tests/Hako.Checks/Hako.Checks.csproj -c Release -- workshop-quota
+      - run: dotnet run --project tests/Hako.Checks/Hako.Checks.csproj -c Release -- workshop-stdio
       - run: dotnet run --project tests/Hako.Checks/Hako.Checks.csproj -c Release -- agent-direct
       - run: dotnet run --project tests/Hako.Checks/Hako.Checks.csproj -c Release -- agent-lan
       - run: dotnet run --project tests/Hako.Checks/Hako.Checks.csproj -c Release -- binary-uploads

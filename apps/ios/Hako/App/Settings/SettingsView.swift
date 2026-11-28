@@ -33,7 +33,7 @@ struct SettingsView: View {
         }
     }
     private enum SheetRoute: String, Identifiable {
-        case server, scanner, applications, github, languageModel, cloud, dataBackup, httpProxy, agents, webhooks
+        case server, scanner, applications, github, languageModel, cloud, dataBackup, httpProxy, agents, webhooks, tokens
         var id: String { rawValue }
     }
     @Environment(\.openURL) private var openURL
@@ -101,12 +101,17 @@ struct SettingsView: View {
                 }
                 .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
                 Button { sheet = .webhooks } label: {
-                    settingsEntry("Webhook 管理", systemImage: "link")
+                    settingsEntry("通知Webhooks", systemImage: "link")
                 }
                 .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
                 .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
             }
             Section("服务配置") {
+                Button { sheet = .tokens } label: {
+                    settingsEntry("金融 API Token", systemImage: "key")
+                }
+                .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
+                .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
                 Button { sheet = .dataBackup } label: {
                     settingsEntry("数据备份", systemImage: "externaldrive.badge.icloud")
                 }
@@ -157,6 +162,12 @@ struct SettingsView: View {
                 .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
             } header: { Text("快捷指令") }
             Section("工具") {
+                NavigationLink { HakoHangDiagnosticsView() } label: {
+                    Label("卡顿诊断", systemImage: "waveform.path.ecg")
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
+                .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
                 NavigationLink { HakoLogsView() } label: {
                     Label("日志", systemImage: "doc.text.magnifyingglass")
                 }
@@ -207,12 +218,13 @@ struct SettingsView: View {
                 case .applications: ConsoleApplicationsView()
                 case .github: GitHubSettingsSheet()
                 case .languageModel: LanguageModelSettingsSheet()
+                case .tokens: HakoTokensView()
                 case .cloud: HakoCloudSettingsView()
                 case .dataBackup: HakoDataBackupSettings()
                 case .httpProxy: HakoApplications.httpProxySettings()
                 case .agents: HakoApplications.agentSettings()
                 case .webhooks:
-                    SettingsSheet(title: "Webhook 管理") { HakoApplications.webhookSettings() }
+                    SettingsSheet(title: "通知Webhooks") { HakoApplications.webhookSettings() }
                 }
             }
             .task(id: updateTaskID) { [updateTaskID] in

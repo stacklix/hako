@@ -13,18 +13,19 @@ struct InvestmentAgentSheet: View {
     @ObservedObject private var agent: InvestmentAgentSession
     @Environment(\.scenePhase) private var scenePhase
     @State private var scrollFollowing = ConversationScrollFollowing()
+    @State private var scrollPosition = ScrollPosition(edge: .bottom)
     @State private var expandedThinking: Set<UUID> = []
     @State private var selectedPhotos: [PhotosPickerItem] = []
     @State private var photoSelectionLimit = InvestmentAgentConversation.maximumImageCount
     @State private var imagePreview: AssistantImageSelection?
     @State private var selectedTool: ToolSelection?
+    @State private var showsHistory = false
     @State private var showsPhotos = false
     @State private var showsModelSettings = false
     @State private var editing: InvestmentAgentProposal?
     @State private var exportDocument: InvestmentExportDocument?
     @State private var exporting = false
     @State private var showsExporter = false
-    @State private var confirmsNewConversation = false
     @FocusState private var composing: Bool
 
     init(store: InvestmentStore, agent: InvestmentAgentSession) {
@@ -34,15 +35,20 @@ struct InvestmentAgentSheet: View {
 
     var body: some View {
         SettingsSheet(title: "记账助手",
-                      isBusy: agent.committing || exporting) {
+                      isBusy: agent.committing || exporting || agent.changingConversation) {
             VStack(spacing: 0) {
                 thread
                 composer
             }
             .background(HakoStyle.background)
+            .disabled(agent.changingConversation)
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button { confirmsNewConversation = true } label: {
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    Button { showsHistory = true } label: { Image(systemName: "clock.arrow.circlepath") }
+                        .accessibilityLabel("历史会话")
+                        .disabled(agent.working || agent.committing || agent.changingConversation || loadingPhoto)
+
+                    Button(action: startNewConversation) {
                         Image(systemName: "square.and.pencil")
                     }
                     .accessibilityLabel("新建会话")
@@ -53,14 +59,19 @@ struct InvestmentAgentSheet: View {
         .onAppear { agent.checkConfiguration() }
         .onDisappear { agent.saveComposerDraft() }
         .onChange(of: scenePhase) { _, phase in if phase != .active { agent.saveComposerDraft() } }
+        .onChange(of: store.ledgerRevision) { _, _ in showsHistory = false }
         .onChange(of: store.hasLoaded, initial: true) { _, loaded in
             if loaded { agent.restoreConversation() }
         }
-        .alert("新建会话", isPresented: $confirmsNewConversation) {
-            Button("取消", role: .cancel) {}
-            Button("新建会话", role: .destructive, action: startNewConversation)
-        } message: {
-            Text("开始新会话会清空当前对话，并放弃未发送的消息和待确认的记账草稿。")
+        .sheet(isPresented: $showsHistory) {
+            AssistantHistorySheet(name: "记账助手",
+                entries: { try await agent.historyEntries() }, messages: { try await agent.historyMessages($0) }, resume: { id in
+                    guard await agent.openHistory(id) else { return false }
+                    selectedPhotos = []; expandedThinking = []; composing = false
+                    scrollFollowing = ConversationScrollFollowing()
+                    scrollPosition = ScrollPosition(edge: .bottom)
+                    return true
+                })
         }
         .photosPicker(isPresented: $showsPhotos, selection: $selectedPhotos,
                       maxSelectionCount: photoSelectionLimit,
@@ -92,83 +103,78 @@ struct InvestmentAgentSheet: View {
     }
 
     private var thread: some View {
-        ScrollViewReader { scroll in
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 14) {
-                    if agent.messages.isEmpty {
-                        VStack(alignment: .leading, spacing: 8) {
-                            assistantLabel
-                            Text("可以告诉我一笔交易、发来成交截图，或查询账本。写入前会请你核对。")
-                                .font(.subheadline)
-                            if !agent.configured {
-                                Button("打开大模型配置") { showsModelSettings = true }
-                                    .buttonStyle(HakoActionButtonStyle(primary: false))
-                            }
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 14) {
+                if agent.messages.isEmpty {
+                    VStack(alignment: .leading, spacing: 8) {
+                        assistantLabel
+                        Text("可以告诉我一笔交易、发来成交截图，或查询账本。写入前会请你核对。")
+                            .font(.subheadline)
+                        if !agent.configured {
+                            Button("打开大模型配置") { showsModelSettings = true }
+                                .buttonStyle(HakoActionButtonStyle(primary: false))
                         }
                     }
-                    ForEach(agent.messages) { item in messageRow(item).id(item.id) }
-                    if let proposal = agent.proposal {
-                        InvestmentAgentPreview(proposal: proposal, committing: agent.committing, busy: agent.working, stale: agent.stale,
-                            edit: { editing = proposal }, discard: agent.discard,
-                            confirm: { Task { await agent.commit(proposal.id) } }, regenerate: { Task { await regenerate(proposal) } })
-                            .id(proposal.id)
-                    }
-                    if agent.canExport {
-                        Button(exporting ? "正在准备账本…" : "导出账本") { Task { await exportLedger() } }
-                            .buttonStyle(HakoActionButtonStyle(primary: false))
-                            .disabled(exporting || agent.committing || agent.working)
-                    }
-                    if let error = agent.error { Text(error).font(.footnote).foregroundStyle(.red) }
-                    if let issue = agent.storageIssue { Text(issue).font(.footnote).foregroundStyle(.red) }
-                    if agent.working {
-                        HStack(spacing: 8) {
-                            ProgressView()
-                            Text(agent.progress).font(.footnote).foregroundStyle(.secondary)
-                            Spacer()
-                        }
-                    }
-                    Color.clear.frame(height: 1).id("end")
                 }
-                .padding(15)
-            }
-            .scrollDismissesKeyboard(.interactively)
-            .onScrollGeometryChange(for: Bool.self) { geometry in
-                geometry.contentSize.height - geometry.visibleRect.maxY <= 80
-            } action: { _, nearBottom in scrollFollowing.observe(nearBottom: nearBottom) }
-            .onScrollPhaseChange { _, phase in
-                if phase == .tracking || phase == .interacting { scrollFollowing.interacting(true) }
-                else if phase == .idle { scrollFollowing.interacting(false) }
-            }
-            .onChange(of: agent.streamContent.text) { _, _ in
-                if agent.streamContent.hasContent, scrollFollowing.shouldFollowUpdates, selectedTool == nil {
-                    scroll.scrollTo("end", anchor: .bottom)
+                ForEach(agent.messages) { item in messageRow(item).id(item.id) }
+                if let proposal = agent.proposal {
+                    InvestmentAgentPreview(proposal: proposal, committing: agent.committing, busy: agent.working, stale: agent.stale,
+                        edit: { editing = proposal }, discard: agent.discard,
+                        confirm: { Task { await agent.commit(proposal.id) } }, regenerate: { Task { await regenerate(proposal) } })
+                        .id(proposal.id)
                 }
-            }
-            .onChange(of: agent.streamContent.thinking) { _, _ in
-                if expandedThinking.contains(agent.streamContent.id), scrollFollowing.shouldFollowUpdates, selectedTool == nil {
-                    scroll.scrollTo("end", anchor: .bottom)
+                if agent.canExport {
+                    Button(exporting ? "正在准备账本…" : "导出账本") { Task { await exportLedger() } }
+                        .buttonStyle(HakoActionButtonStyle(primary: false))
+                        .disabled(exporting || agent.committing || agent.working)
                 }
-            }
-            .onChange(of: agent.messages.last?.id, initial: true) { _, _ in
-                if let reply = agent.messages.last {
-                    if reply.isUser {
-                        scrollFollowing = ConversationScrollFollowing()
-                        scroll.scrollTo(reply.id, anchor: .bottom)
-                    } else if scrollFollowing.shouldFollowUpdates, selectedTool == nil, !expandedThinking.contains(reply.id) {
-                        if agent.toolCalls[reply.id] != nil { scroll.scrollTo("end", anchor: .bottom) }
-                        else { scroll.scrollTo(reply.id, anchor: .top) }
+                if let error = agent.error { Text(error).font(.footnote).foregroundStyle(.red) }
+                if let issue = agent.storageIssue { Text(issue).font(.footnote).foregroundStyle(.red) }
+                if agent.working {
+                    HStack(spacing: 8) {
+                        ProgressView()
+                        Text(agent.progress).font(.footnote).foregroundStyle(.secondary)
+                        Spacer()
                     }
                 }
+                Color.clear.frame(height: 1).id("end")
             }
-            .onChange(of: agent.toolCalls) { _, _ in
-                if scrollFollowing.shouldFollowUpdates, selectedTool == nil { scroll.scrollTo("end", anchor: .bottom) }
-            }
-            .onChange(of: agent.proposal?.id, initial: true) { _, id in
-                if let id, scrollFollowing.shouldFollowUpdates, selectedTool == nil,
-                   agent.messages.last.map({ expandedThinking.contains($0.id) }) != true {
-                    scroll.scrollTo(id, anchor: .top)
-                }
-            }
+            .padding(15)
+            .scrollTargetLayout()
+        }
+        .scrollPosition($scrollPosition)
+        .defaultScrollAnchor(.bottom, for: .initialOffset)
+        .scrollDismissesKeyboard(.interactively)
+        .onScrollGeometryChange(for: ConversationScrollFollowing.Layout.self) { geometry in
+            .init(contentHeight: geometry.contentSize.height, viewportHeight: geometry.visibleRect.height,
+                  visibleBottom: geometry.visibleRect.maxY)
+        } action: { _, layout in
+            if scrollFollowing.observe(layout) { followLatest() }
+        }
+        .onScrollPhaseChange { _, phase in
+            if phase == .tracking || phase == .interacting { scrollFollowing.interacting(true) }
+            else if phase == .idle { scrollFollowing.interacting(false) }
+        }
+        .onChange(of: agent.streamContent.text) { _, _ in
+            if agent.streamContent.hasContent { followLatest() }
+        }
+        .onChange(of: agent.streamContent.thinking) { _, _ in
+            if expandedThinking.contains(agent.streamContent.id) { followLatest() }
+        }
+        .onChange(of: agent.messages.last?.id, initial: true) { _, _ in
+            if agent.messages.last?.isUser == true { scrollFollowing = ConversationScrollFollowing() }
+            followLatest()
+        }
+        .onChange(of: agent.toolCalls) { _, _ in followLatest() }
+        .onChange(of: agent.proposal?.id) { _, _ in followLatest() }
+        .onChange(of: agent.working) { _, _ in followLatest() }
+        .onChange(of: agent.committing) { _, _ in followLatest() }
+    }
+
+    private func followLatest() {
+        if scrollFollowing.shouldFollowUpdates, selectedTool == nil, editing == nil, imagePreview == nil,
+           agent.messages.last.map({ expandedThinking.contains($0.id) }) != true {
+            scrollPosition.scrollTo(edge: .bottom)
         }
     }
 
@@ -205,7 +211,9 @@ struct InvestmentAgentSheet: View {
                 } else if let html = item.html {
                     AssistantReplyView(html: html, onChoice: !agent.working && !agent.committing && !agent.canRetry && !loadingPhoto && agent.messages.last?.id == item.id ? { choice in
                         if agent.select(choice, replyingTo: item.id) { composing = false }
-                    } : nil)
+                    } : nil, confirmation: item.receipt.map { receipt in
+                        .init(itemSymbols: Dictionary(receipt.buyItemIndices.map { ($0, "arrow.down.left") }, uniquingKeysWith: { first, _ in first }))
+                    })
                 } else {
                     Text(verbatim: item.text).textSelection(.enabled)
                 }
@@ -269,16 +277,18 @@ struct InvestmentAgentSheet: View {
     private var hasUnsentMessage: Bool { !message.isEmpty || !attachments.isEmpty || loadingPhoto }
 
     private var canStartNewConversation: Bool {
-        !agent.working && !agent.committing && !exporting &&
+        !agent.changingConversation && !loadingPhoto && !agent.working && !agent.committing && !exporting &&
             (!agent.messages.isEmpty || agent.proposal != nil || agent.error != nil || agent.storageIssue != nil || hasUnsentMessage)
     }
 
     private func startNewConversation() {
-        guard canStartNewConversation, agent.startNewConversation() else { return }
-        message = ""
-        attachments = []
-        selectedPhotos = []
-        composing = false
+        guard canStartNewConversation else { return }
+        Task {
+            guard await agent.startNewConversation() else { return }
+            selectedPhotos = []; expandedThinking = []; composing = false
+            scrollFollowing = ConversationScrollFollowing()
+            scrollPosition = ScrollPosition(edge: .bottom)
+        }
     }
 
     private func shortcut(_ title: String, action: @escaping () -> Void) -> some View {

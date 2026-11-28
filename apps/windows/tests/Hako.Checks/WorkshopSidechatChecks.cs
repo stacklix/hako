@@ -81,6 +81,14 @@ internal static class WorkshopSidechatChecks
         }
         try
         {
+            var activity = CodeWorkshop.Item(Json(new { id = "dispatch", type = "collabAgentToolCall", tool = "spawnAgent", prompt = "Inspect", receiverThreadIds = new[] { Agent },
+                agentsStates = new Dictionary<string, object> { [Agent] = new { status = "running", message = "Checking" } } }))!;
+            Check(activity.Kind == "subagents" && activity.Agents is { Length: 1 } && activity.Agents[0].AgentId == Agent &&
+                activity.Agents[0].Task == "Inspect" && activity.Agents[0].State == "running", "Native dispatch metadata was discarded");
+            var finishedActivity = CodeWorkshop.Item(Json(new { id = "finish", type = "subAgentActivity", kind = "completed", agentThreadId = Agent }))!;
+            Check(finishedActivity.Agents![0].State == "completed", "Native child completion must reach the main transcript");
+            Check(CodeWorkshop.Item(Json(new { id = "bad", type = "subAgentActivity", kind = "started", agentThreadId = "invalid" })) is null,
+                "Malformed child identities must not create task cards");
             var large = new string('测', 4000);
             var bounded = CodeWorkshop.Subagent(Json(new { id = Agent, agentNickname = large, agentRole = large,
                 preview = large, model = large, reasoningEffort = large, updatedAt = 1L }), "completed");
@@ -93,6 +101,7 @@ internal static class WorkshopSidechatChecks
                 var agents = Json((await service.SubagentsAsync(Json(new { threadId = Parent, applicationId }), default))!);
                 Check(agents.GetProperty("agents").GetArrayLength() == 1, "Unrelated subagents leaked into collaboration");
                 var agent = agents.GetProperty("agents")[0];
+                Check(agent.GetProperty("turn").GetProperty("durationMs").GetInt64() == 128000, "Subagent list lost native turn duration");
                 Check(agent.GetProperty("name").GetString() == "Darwin" && agent.GetProperty("role").GetString() == "explorer"
                     && agent.GetProperty("model").GetString() == "fixture-model", "Subagent metadata was lost");
                 for (var attempt = 0; attempt < 100 && agent.GetProperty("taskState").GetString() == "loading"; attempt++) {
@@ -122,6 +131,14 @@ internal static class WorkshopSidechatChecks
                 var assignments = await Tasks();
                 Check(assignments.Count == 3 && assignments["spawn-task"] == TaskText && assignments["followup-task"] == "追加检查" && assignments["message-task"] == "补充要求",
                     "Assignments lost full text/followups or included inherited/failed calls");
+                var filtered = Json((await service.SubagentTaskReadAsync(Json(new { threadId = Parent, applicationId, agentId = Agent,
+                    messageIds = new[] { "followup-task" } }), default))!);
+                Check(filtered.GetProperty("entries").GetArrayLength() == 1 &&
+                    filtered.GetProperty("entries")[0].GetProperty("text").GetString() == "追加检查",
+                    "Inline task details included instructions from a different assignment");
+                var absent = Json((await service.SubagentTaskReadAsync(Json(new { threadId = Parent, applicationId, agentId = Agent,
+                    messageIds = new[] { "another-round" } }), default))!);
+                Check(absent.GetProperty("entries").GetArrayLength() == 0, "Unmatched round filters leaked older instructions");
                 var scans = File.ReadAllText(Path.Combine(project, "assignment-reads"));
                 await Tasks();
                 Check(scans == File.ReadAllText(Path.Combine(project, "assignment-reads")), "Unchanged task descriptions were rescanned");
@@ -260,7 +277,8 @@ internal static class WorkshopSidechatChecks
                 "thread/fork" or "thread/resume" => new { thread = Thread(Child), model = "fixture" },
                 "thread/read" => new { thread = Thread(id) },
                 "thread/list" => new { data = CodexJson.Text(p, "parentThreadId").Length > 0 ? new[] { Thread(Agent), Thread(Child) } : new[] { Thread(Parent), Thread(Child) }, nextCursor = (string?)null },
-                "thread/turns/list" => new { data = new[] { new { id = id == Parent ? "parent-turn" : turnId, status = id == Parent ? "inProgress" : "completed", items = Array.Empty<object>() } }, nextCursor = (string?)null },
+                "thread/turns/list" => new { data = new[] { new { id = id == Parent ? "parent-turn" : turnId, status = id == Parent ? "inProgress" : "completed",
+                    startedAt = 1000L, completedAt = 1128L, durationMs = 128000L, items = Array.Empty<object>() } }, nextCursor = (string?)null },
                 "thread/items/list" => new { data = id == Parent ? (object[])AssignmentItems() : own.ValueKind == JsonValueKind.Undefined ? new object[] {
                     new { turnId = "parent-turn", item = new { id = "parent-answer", type = "agentMessage", text = "Parent-only response" } }
                 } : new object[] {

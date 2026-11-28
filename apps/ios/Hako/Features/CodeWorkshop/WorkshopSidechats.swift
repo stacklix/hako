@@ -14,24 +14,17 @@ struct WorkshopSidechatList: Decodable { let sessions: [WorkshopSession]; let ne
     @Published private(set) var loadingAgents = false
     @Published private(set) var agentCursor: String?
     @Published private(set) var agentError: String?
-    var hasCollaboration: Bool { !sessions.isEmpty || !agents.isEmpty }
     var hasRunning: Bool { sessions.contains { $0.inProgress } || agents.contains { $0.active } }
     func isUnread(_ session: WorkshopSession, at date: Date) -> Bool {
         parent.store.collaborationUnread(session, agentId: parent.agent.id, at: date)
     }
-    func isUnread(_ agent: WorkshopSubagent, at date: Date) -> Bool {
-        parent.store.collaborationUnread(agent, agentId: parent.agent.id, at: date)
-    }
     func hasUnread(at date: Date) -> Bool {
-        sessions.contains { isUnread($0, at: date) } || agents.contains { isUnread($0, at: date) }
+        sessions.contains { isUnread($0, at: date) }
     }
     func sessionItems(at date: Date) -> [WorkshopSessionListItem] {
         WorkshopCatalog.listItems(sessions, hasDraft: {
             parent.store.hasDraft($0, agent: parent.agent, application: parent.application)
         }, isUnread: { isUnread($0, at: date) })
-    }
-    func orderedAgents(at date: Date) -> [WorkshopSubagent] {
-        WorkshopSubagent.ordered(agents, isUnread: { isUnread($0, at: date) })
     }
     private var draft: WorkshopConversation?
 
@@ -48,6 +41,8 @@ struct WorkshopSidechatList: Decodable { let sessions: [WorkshopSession]; let ne
             guard parent.scope == parent.store.scope, !Task.isCancelled else { return }
             if more { agents.append(contentsOf: reply.agents.filter { incoming in !agents.contains(where: { $0.id == incoming.id }) }) }
             else { agents = reply.agents }
+            parent.updateInlineAgents(reply.agents)
+            await parent.restoreInlineAgentTasks()
             agentCursor = reply.nextCursor
             agentError = nil
         } catch is CancellationError { }
@@ -110,7 +105,6 @@ struct WorkshopSidechatSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     @State private var transfer: WorkshopSidechatTransfer?
-    @State private var tab = WorkshopCollaborationTab.sidechats
 
     init(model: WorkshopSidechats) {
         self.model = model
@@ -125,24 +119,10 @@ struct WorkshopSidechatSheet: View {
                     newSidechat: { model.create() }, returnSidechat: { transfer = .init(text: $0) }, sidechatOverlayPresented: transfer != nil)
             } else {
                 VStack(spacing: 0) {
-                    HStack(spacing: 28) {
-                        ForEach(WorkshopCollaborationTab.allCases, id: \.self) { option in
-                            Button { tab = option } label: {
-                                Text("\(option.rawValue) · \(option == .sidechats ? model.sessions.count : model.agents.count)")
-                                    .font(.subheadline).fontWeight(tab == option ? .semibold : .regular)
-                                    .foregroundStyle(tab == option ? Color.primary : Color.secondary)
-                                    .frame(minHeight: 44)
-                                    .overlay(alignment: .bottom) { Capsule().fill(tab == option ? Color.primary : .clear).frame(height: 2) }
-                            }.buttonStyle(.plain).accessibilityAddTraits(tab == option ? .isSelected : [])
-                        }
-                        Spacer(minLength: 0)
-                    }.padding(.horizontal, 20)
-                    Divider()
                     List {
                     Section {
                         WorkshopSidechatParentStatus(parent: model.parent)
                     }
-                    if tab == .sidechats {
                     if let error = model.error {
                         Section {
                             Text(error).font(.footnote).foregroundStyle(.secondary)
@@ -178,48 +158,24 @@ struct WorkshopSidechatSheet: View {
                     } footer: {
                         Text("创建时继承主会话上下文，后续讨论独立保存。")
                     }
-                    } else {
-                        if let error = model.agentError {
-                            Section {
-                                Text(error).font(.footnote).foregroundStyle(.secondary)
-                                Button("重新读取") { Task { await model.refreshAgents() } }.disabled(model.loadingAgents)
-                            }
-                        }
-                        if model.loadingAgents && model.agents.isEmpty { ProgressView("正在读取子代理…") }
-                        if !model.loadingAgents && model.agentError == nil && model.agents.isEmpty {
-                            Text("暂无子代理").foregroundStyle(.secondary)
-                        }
-                        ForEach(model.orderedAgents(at: .now)) { agent in
-                            NavigationLink {
-                                WorkshopSubagentDetail(model: model, initial: agent)
-                            } label: { WorkshopSubagentRow(agent: agent, unread: model.isUnread(agent, at: .now)) }
-                                .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
-                                .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
-                        }
-                        if model.agentCursor != nil {
-                            Button("加载更多子代理") { Task { await model.refreshAgents(more: true) } }.disabled(model.loadingAgents)
-                        }
-                    }
                 }
                 .scrollContentBackground(.hidden).background(HakoStyle.background)
-                .refreshable { await model.refreshCollaboration() }
+                .refreshable { await model.refresh() }
                 }
                 .background(HakoStyle.background)
-                .navigationTitle("会话协作").navigationBarTitleDisplayMode(.inline)
+                .navigationTitle("侧聊").navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .topBarLeading) {
-                        Button { dismiss() } label: { Image(systemName: "xmark") }.accessibilityLabel("关闭会话协作")
+                        Button { dismiss() } label: { Image(systemName: "xmark") }.accessibilityLabel("关闭侧聊")
                     }
                     ToolbarItem(placement: .topBarTrailing) {
-                        if tab == .sidechats {
-                            Button { model.create() } label: { Image(systemName: "plus") }.accessibilityLabel("新建侧聊")
-                        }
+                        Button { model.create() } label: { Image(systemName: "plus") }.accessibilityLabel("新建侧聊")
                     }
                 }
                 .task(id: scenePhase) {
                     guard scenePhase == .active else { return }
                     while !Task.isCancelled {
-                        await model.refreshCollaboration()
+                        await model.refresh()
                         try? await Task.sleep(for: .seconds(10))
                     }
                 }
@@ -246,8 +202,8 @@ struct WorkshopCollaborationButtonIcon: View {
             let unread = model.hasUnread(at: timeline.date)
             Image(systemName: "bubble.left.and.bubble.right")
                 .symbolRenderingMode(.monochrome)
-                .foregroundStyle(unread ? Color.blue : model.hasRunning ? Color.green : Color.primary)
-                .accessibilityLabel(unread ? "会话协作，有未读回复" : model.hasRunning ? "会话协作，有任务执行中" : "会话协作")
+                .foregroundStyle(unread ? Color.blue : model.sessions.contains(where: { $0.inProgress }) ? Color.green : Color.primary)
+                .accessibilityLabel(unread ? "侧聊，有未读回复" : "侧聊")
         }
     }
 }
@@ -274,7 +230,7 @@ struct WorkshopSidechatReturnView: View {
     @State var text: String
     let onSubmitted: () -> Void
     private let initialText: String
-    @State private var steer = true
+    @State private var queue = false
     @State private var sending = false
     @State private var error: String?
 
@@ -287,34 +243,56 @@ struct WorkshopSidechatReturnView: View {
 
     var body: some View {
         SettingsSheet(title: "发回主会话", hasChanges: text != initialText, isBusy: sending) {
-            Form {
-                Section("补充给 Codex 的指令") {
-                    TextEditor(text: $text).frame(minHeight: 150).accessibilityLabel("补充给 Codex 的指令")
-                }
-                if parent.operation?.active == true {
-                    Section {
-                        Picker("发送方式", selection: $steer) {
-                            Text("立即引导").tag(true)
-                            Text("排队发送").tag(false)
-                        }.pickerStyle(.segmented)
-                    } header: { Text("发送方式") } footer: { Text(steer ? "补充到正在执行的任务中。" : "当前轮次结束后再执行。") }
-                } else {
-                    Section { Text("发送后会在主会话开启新一轮。").font(.footnote).foregroundStyle(.secondary) }
-                }
-                if let error { Section { Text(error).font(.footnote).foregroundStyle(.secondary) } }
-                Section {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 24) {
+                    if parent.operation?.active == true {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Toggle("排队发送", isOn: $queue)
+                                .tint(.green)
+                                .padding(.horizontal, 18).padding(.vertical, 12)
+                                .background(HakoStyle.card, in: RoundedRectangle(cornerRadius: 20))
+                                .disabled(sending)
+                            Text(queue ? "当前轮次结束后再执行。" : "立即引导，补充到正在执行的任务中。")
+                                .font(.footnote).foregroundStyle(HakoStyle.muted)
+                                .padding(.horizontal, 18)
+                        }
+                    } else {
+                        Text("发送后会在主会话开启新一轮。")
+                            .font(.footnote).foregroundStyle(HakoStyle.muted)
+                            .padding(.horizontal, 18)
+                    }
                     Button(sending ? "正在发送…" : "发送并返回主会话") {
                         sending = true
+                        error = nil
                         Task {
-                            let submitted = await parent.sendSidechatConclusion(text, steer: steer)
+                            let submitted = await parent.sendSidechatConclusion(text, steer: !queue)
                             sending = false
                             if submitted { onSubmitted() }
                             else { error = parent.error ?? "主会话暂时无法发送，请检查连接或任务状态后重试。" }
                         }
                     }.buttonStyle(HakoActionButtonStyle())
                         .disabled(sending || !parent.canSendPrompt || text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || text.utf16.count > 4000)
+                    if let error { Text(error).font(.footnote).foregroundStyle(.secondary) }
+                    VStack(alignment: .leading, spacing: 9) {
+                        Text("补充给 Codex 的指令")
+                            .font(.subheadline).foregroundStyle(.secondary)
+                            .padding(.horizontal, 18)
+                        TextField("", text: $text, axis: .vertical)
+                            .font(.subheadline).lineSpacing(5)
+                            .lineLimit(6...)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .textFieldStyle(.plain)
+                            .accessibilityLabel("补充给 Codex 的指令")
+                            .disabled(sending)
+                            .padding(20)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(HakoStyle.card, in: RoundedRectangle(cornerRadius: 22))
+                    }
                 }
+                .padding(20)
             }
+            .scrollDismissesKeyboard(.interactively)
+            .background(HakoStyle.background)
         }
     }
 }

@@ -7,6 +7,49 @@ import Foundation
 
     static func main() async throws {
         do {
+            let activity = WorkshopAgentActivity(agentId: "child", name: "Pascal", action: "started", task: "检查", state: "running", summary: "")
+            let first = WorkshopEntry(kind: "subagents", id: "start", text: "", role: "", state: "", truncated: false, turnId: "round", agents: [activity])
+            var update = first; update.agents?[0].state = "completed"
+            var entries: [WorkshopEntry] = [], stream: [String: String] = [:]
+            WorkshopTranscriptMerge.apply([first, update], entries: &entries, streamText: &stream)
+            precondition(entries.count == 1 && entries[0].agents?[0].state == "completed")
+            let history = WorkshopTranscriptPresentation(entries: entries, followups: []).history
+            precondition(history.count == 1 && history[0].id == "agents-round" && history[0].kind == "subagentGroup")
+            var later = first; later.turnId = "other-round"
+            precondition(WorkshopTranscriptPresentation(entries: [first, later], followups: []).history.count == 2)
+            let terminal = WorkshopEntry(kind: "turn", id: "turn-round", text: "", role: "", state: "", truncated: false,
+                turnId: "round", turn: WorkshopTurn(id: "round", state: "completed", startedAt: 100, completedAt: 110, durationMs: 10000))
+            let queued = entry("queued", "后续问题", kind: "followup", role: "user", state: "queued")
+            let merged = WorkshopTranscriptMerge.history([queued, first], page: [update, terminal])
+            precondition(merged.contains { $0.id == first.id && $0.agents?[0].state == "completed" },
+                "History merging must retain raw child task records instead of a display anchor")
+            precondition(merged.contains(terminal) && merged.last?.id == queued.id,
+                "Moving queued messages must preserve native terminal metadata")
+            precondition(!merged.contains { $0.kind == "subagentGroup" })
+            precondition(WorkshopAgentGroup.groups(in: merged).first?.completedCount == 1)
+            var withFollowup = merged
+            WorkshopTranscriptMerge.apply(queued, entries: &withFollowup, streamText: &stream)
+            precondition(withFollowup.contains(terminal) && withFollowup.contains { $0.agents != nil },
+                "Queue updates must not strip subagents or turn markers")
+            let replayed = WorkshopTranscriptMerge.history(withFollowup, page: [update, terminal])
+            let cards = WorkshopTranscriptPresentation(entries: replayed, followups: []).history.filter { $0.kind == "subagentGroup" }
+            precondition(cards.count == 1 && cards[0].id == "agents-round", "Repeated synchronization produces one child task card")
+        }
+        do {
+            var planEntries: [WorkshopEntry] = []
+            var planStream: [String: String] = [:]
+            var plan = entry("plan-round", "", kind: "plan", role: "")
+            plan.turnId = "round"
+            plan.plan = [WorkshopPlanStep(step: "测试", status: "inProgress")]
+            WorkshopTranscriptMerge.apply(plan, entries: &planEntries, streamText: &planStream)
+            plan.plan = [WorkshopPlanStep(step: "测试", status: "completed")]
+            WorkshopTranscriptMerge.apply(plan, entries: &planEntries, streamText: &planStream)
+            precondition(planEntries.count == 1 && planEntries[0].plan?[0].status == "completed", "Plan updates must refresh their original row")
+            plan.plan = []
+            WorkshopTranscriptMerge.apply(plan, entries: &planEntries, streamText: &planStream)
+            precondition(WorkshopTranscriptPresentation(entries: planEntries, followups: []).history.isEmpty, "Cleared plans must not leave empty rows")
+        }
+        do {
         var timedEntries: [WorkshopEntry] = []
         var timedStream: [String: String] = [:]
         let started = WorkshopEntry(kind: "item", id: "timed", text: "", role: "assistant", state: "", truncated: false,
@@ -158,6 +201,28 @@ import Foundation
         precondition(layoutFollowing.observe(layout(2400, 600, 600)),
             "Opening cached history must correct the initial measured position without a new message revision")
         precondition(!layoutFollowing.observe(layout(2400, 600, 2400)), "Reaching the bottom must not trigger a scroll loop")
+        for _ in 0..<20 {
+            precondition(!layoutFollowing.presentationUpdated { _ in true },
+                "A redraw or retry at the measured bottom must not issue another bottom scroll")
+        }
+        var elasticScroll = ConversationScrollFollowing()
+        precondition(elasticScroll.observe(layout(2400, 600, 2700)))
+        precondition(!elasticScroll.observe(layout(2400, 600, 2700)),
+            "The same overscroll geometry must not create a correction loop")
+        precondition(!elasticScroll.presentationUpdated { _ in true },
+            "Rendering must not duplicate an outstanding geometry correction")
+        _ = elasticScroll.observe(layout(2400, 600, 2400))
+        precondition(elasticScroll.observe(layout(2400, 600, 2700)),
+            "A later, separate overscroll still gets corrected")
+        var readingNearBottom = ConversationScrollFollowing()
+        _ = readingNearBottom.observe(layout(2400, 600, 2400))
+        readingNearBottom.interacting(true)
+        _ = readingNearBottom.observe(layout(2400, 600, 2360))
+        readingNearBottom.interacting(false)
+        precondition(!readingNearBottom.shouldFollowUpdates,
+            "Reading even the last few lines must not be mistaken for returning to the bottom")
+        precondition(!readingNearBottom.presentationUpdated { _ in true })
+        precondition(!readingNearBottom.observe(layout(2600, 600, 2360)))
         var sendingScroll = ConversationScrollFollowing()
         _ = sendingScroll.observe(layout(9000, 600, 9000))
         sendingScroll.messageAppended("new-message")

@@ -11,15 +11,18 @@ struct StockTradeSettingsView: View {
     var body: some View {
         SettingsSheet(title: "Cerno 设置", hasChanges: loaded && draft != original, isBusy: loggingOut) {
             StockTradeScreen {
-                StockTradeSectionLabel(title: "连接")
+                StockTradeSectionLabel(title: "连接与通知")
                 StockTradeCard {
                     NavigationLink {
                         StockTradeConnectionSettingsView(store: store, draft: $draft, message: $message,
                             hasChanges: loaded && draft != original,
                             save: save, discard: { draft = original; message = nil })
                     } label: {
-                        StockTradeEntryRow(title: "连接设置", subtitle: store.configured ? "后端地址与应用 ID" : "尚未配置", separator: false)
+                        StockTradeEntryRow(title: "连接设置", subtitle: store.configured ? "后端地址与应用 ID" : "尚未配置")
                     }.buttonStyle(.plain).accessibilityIdentifier("cerno.settings.connection")
+                    Button { showingNotifications = true }
+                    label: { StockTradeEntryRow(title: "通知配置", subtitle: "邮件与手机提醒", separator: false) }
+                        .buttonStyle(.plain).disabled(store.session == nil).accessibilityIdentifier("cerno.settings.notifications")
                 }
                 StockTradeSectionLabel(title: "账号与授权")
                 StockTradeCard {
@@ -49,11 +52,6 @@ struct StockTradeSettingsView: View {
                         label: { StockTradeEntryRow(title: topic.rawValue, subtitle: topic.subtitle, separator: topic != .terms) }
                             .buttonStyle(.plain).accessibilityIdentifier("cerno.guide.\(topic.id)")
                     }
-                }
-                StockTradeCard(padding: 18) {
-                    Button { showingNotifications = true } label: { StockTradeEntryRow(title: "通知配置") }.buttonStyle(.plain).disabled(store.session == nil)
-                    NavigationLink { StockTradeHealthView(store: store) }
-                    label: { StockTradeEntryRow(title: "调度与后台状态", separator: false) }.buttonStyle(.plain).disabled(store.session == nil)
                 }
             }
             .onAppear { if !loaded { draft = store.connection; original = draft; loaded = true } }

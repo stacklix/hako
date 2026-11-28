@@ -13,6 +13,18 @@ private final class Counter: @unchecked Sendable {
     }
 
     static func main() async throws {
+        let activity = WorkshopAgentActivity(agentId: "child", name: "Pascal", action: "spawnAgent",
+            task: "核对价格精度", state: "running", summary: "")
+        let assignment = WorkshopEntry(kind: "subagents", id: "assignment", text: "", role: "", state: "", truncated: false,
+            turnId: "parent-round", agents: [activity])
+        let childRenderer = WorkshopTranscriptRenderer()
+        let initialChildren = WorkshopTranscriptLayout.initial(entries: [assignment], followups: [], revision: 1)
+        let renderedChildren = await childRenderer.render(entries: [assignment], followups: [], artifacts: [], projectPath: "/project", revision: 1)
+        precondition(initialChildren.agentGroups == renderedChildren.agentGroups && renderedChildren.agentGroups.count == 1)
+        precondition(renderedChildren.agentGroups.first?.rows.first?.activity.task == "核对价格精度")
+        let clearedChildren = await childRenderer.render(entries: [], followups: [], artifacts: [], projectPath: "/project", revision: 2)
+        precondition(clearedChildren.agentGroups.isEmpty && renderedChildren.agentGroups.first?.anchorID == "agents-parent-round",
+            "Each rendered anchor must keep its own task snapshot when the raw conversation changes")
         let completedTurn = WorkshopTurn(id: "round", state: "completed", startedAt: 1000, completedAt: 1383, durationMs: 383000)
         let progressReply = WorkshopEntry(kind: "item", id: "progress", text: "Checking", role: "assistant", state: "", truncated: false, turnId: "round")
         let finalReply = WorkshopEntry(kind: "item", id: "final", text: "Done", role: "assistant", state: "", truncated: false, turnId: "round")

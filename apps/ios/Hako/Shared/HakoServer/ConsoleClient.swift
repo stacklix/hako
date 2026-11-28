@@ -85,7 +85,7 @@ struct ConsoleRemoteSession: Decodable, Identifiable {
     }
 
     private func receiveLoginPrompts(token: String, context: String, receive: @escaping @MainActor (Data) throws -> Void) async throws {
-        let socket = try makeWebSocket("/api/v1/auth/login-prompts/stream", token: token, context: context)
+        let socket = try await makeWebSocket("/api/v1/auth/login-prompts/stream", token: token, context: context)
         defer { socket.cancel(with: .goingAway, reason: nil) }
         do {
             try await withTaskCancellationHandler {
@@ -109,7 +109,7 @@ struct ConsoleRemoteSession: Decodable, Identifiable {
         for attempt in 0..<2 {
             try Task.checkCancellation()
             guard let token = saved?.tokens.accessToken else { throw CancellationError() }
-            let socket = try makeWebSocket(path, token: token, context: context)
+            let socket = try await makeWebSocket(path, token: token, context: context)
             let deadline = Task {
                 try await Task.sleep(for: .seconds(15))
                 socket.cancel(with: .goingAway, reason: nil)
@@ -136,17 +136,23 @@ struct ConsoleRemoteSession: Decodable, Identifiable {
         throw CancellationError()
     }
 
-    private func makeWebSocket(_ path: String, token: String, context: String) throws -> URLSessionWebSocketTask {
+    private func makeWebSocket(_ path: String, token: String, context: String) async throws -> URLSessionWebSocketTask {
         guard context == requestContext, authenticated, !logoutPending, !resettingKey,
               let url = URL(string: serverURL + path), url.scheme == "https",
               var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { throw CancellationError() }
         components.scheme = "wss"
         guard let socketURL = components.url else { throw HakoError(message: "WebSocket 连接地址无效。") }
-        let device = try identity()
+        let origin = serverURL
+        let (deviceID, proof) = try await Task.detached(priority: .userInitiated) {
+            let device = try ConsoleIdentity.load(origin: origin)
+            return (device.deviceId, try device.proof(method: "GET", url: url, accessToken: token))
+        }.value
+        try Task.checkCancellation()
+        guard context == requestContext, !resettingKey else { throw CancellationError() }
         var request = URLRequest(url: socketURL, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 30)
         request.setValue("DPoP " + token, forHTTPHeaderField: "Authorization")
-        request.setValue(try device.proof(method: "GET", url: url, accessToken: token), forHTTPHeaderField: "DPoP")
-        request.setValue(device.deviceId, forHTTPHeaderField: "X-Hako-Device")
+        request.setValue(proof, forHTTPHeaderField: "DPoP")
+        request.setValue(deviceID, forHTTPHeaderField: "X-Hako-Device")
         let socket = transport.webSocketTask(with: request)
         socket.maximumMessageSize = 2_097_152
         socket.resume()
@@ -262,9 +268,23 @@ struct ConsoleRemoteSession: Decodable, Identifiable {
     private func restoreInternal() async throws {
         if authenticated, !logoutPending, let session = saved,
            sessionValidation.canReuse(context: requestContext, expiresAt: session.tokens.expiresAt) { return }
-        _ = try publicKeyForExport()
+        let context = requestContext, origin = serverURL, account = sessionAccount
+        let (device, pem) = try await HakoExecutionDiagnostics.measure("读取 Secure Enclave 公钥") {
+            try await Task.detached(priority: .userInitiated) {
+                let device = try ConsoleIdentity.load(origin: origin.isEmpty ? nil : origin)
+                return (device, try device.publicKeyPEM())
+            }.value
+        }
+        try Task.checkCancellation()
+        guard context == requestContext, !resettingKey else { throw CancellationError() }
+        deviceId = device.deviceId; publicKeyPEM = pem
         guard !serverURL.isEmpty else { return }
-        if let data = try HakoExecutionDiagnostics.measure("读取服务端登录会话", operation: { try ConsoleKeychain.read(sessionAccount) }) {
+        let data = try await HakoExecutionDiagnostics.measure("读取服务端登录会话") {
+            try await Task.detached(priority: .userInitiated) { try ConsoleKeychain.read(account) }.value
+        }
+        try Task.checkCancellation()
+        guard context == requestContext, !resettingKey else { throw CancellationError() }
+        if let data {
             let restored = try JSONDecoder().decode(ConsoleSession.self, from: data)
             guard restored.tokens.deviceId == deviceId else {
                 try persist(nil); authenticated = false; remoteSessions = []
@@ -317,12 +337,17 @@ struct ConsoleRemoteSession: Decodable, Identifiable {
         request.httpMethod = method
         if let body { request.httpBody = try JSONSerialization.data(withJSONObject: body); request.setValue("application/json", forHTTPHeaderField: "Content-Type") }
         if signed {
-            let device = try identity()
-            let proof = try HakoExecutionDiagnostics.measure("生成设备请求签名（Secure Enclave）") {
-                try device.proof(method: method, url: url, accessToken: token, nonce: nonce)
+            let context = requestContext, origin = serverURL
+            let (deviceID, proof) = try await HakoExecutionDiagnostics.measure("生成设备请求签名（Secure Enclave）") {
+                try await Task.detached(priority: .userInitiated) {
+                    let device = try ConsoleIdentity.load(origin: origin)
+                    return (device.deviceId, try device.proof(method: method, url: url, accessToken: token, nonce: nonce))
+                }.value
             }
+            try Task.checkCancellation()
+            guard context == requestContext, !resettingKey else { throw CancellationError() }
             request.setValue(proof, forHTTPHeaderField: "DPoP")
-            request.setValue(device.deviceId, forHTTPHeaderField: "X-Hako-Device")
+            request.setValue(deviceID, forHTTPHeaderField: "X-Hako-Device")
         }
         if let token { request.setValue("DPoP " + token, forHTTPHeaderField: "Authorization") }
         let data: Data

@@ -33,6 +33,8 @@ jobs:
           /tmp/hako-app-update-tests
           swiftc Hako/Shared/Navigation/HakoPinnedPage.swift Tests/HakoPinnedPageTests.swift -o /tmp/hako-pin-tests
           /tmp/hako-pin-tests
+          swiftc Hako/Shared/Navigation/HakoPresentationQueue.swift Tests/HakoPresentationQueueTests.swift -o /tmp/hako-presentation-queue-tests
+          /tmp/hako-presentation-queue-tests
           swiftc Hako/Shared/Navigation/HakoPinDrag.swift Tests/HakoPinDragTests.swift -o /tmp/hako-pin-drag-tests
           /tmp/hako-pin-drag-tests
           swiftc Hako/Shared/Navigation/HakoPinnedPage.swift Hako/Features/Containers/ArcanePinRoute.swift Tests/ArcanePinRouteTests.swift -o /tmp/hako-container-pin-tests
@@ -51,6 +53,12 @@ jobs:
         run: |
           swiftc Hako/Shared/UI/HakoSecureTextBuffer.swift Tests/HakoSecureTextBufferTests.swift -o /tmp/hako-secure-text-tests
           /tmp/hako-secure-text-tests
+      - name: Test local hang monitoring and independent diagnostic storage
+        run: |
+          swiftc Hako/Shared/Infrastructure/Logging/HakoHangMonitorState.swift Tests/HakoHangMonitorTests.swift -o /tmp/hako-hang-monitor-tests
+          /tmp/hako-hang-monitor-tests
+          swiftc Hako/Shared/Infrastructure/Logging/HakoLog.swift Hako/Shared/Infrastructure/Logging/HakoDiagnosticStore.swift Tests/HakoDiagnosticStoreTests.swift -o /tmp/hako-diagnostic-store-tests
+          /tmp/hako-diagnostic-store-tests
       - name: Test random string generation
         run: |
           swiftc Hako/Features/SwissArmyKnife/RandomStringGenerator.swift Tests/RandomStringGeneratorTests.swift -o /tmp/hako-random-string-tests
@@ -96,6 +104,10 @@ jobs:
           swiftc Hako/Shared/Network/NetworkSSIDCache.swift Tests/NetworkSSIDCacheTests.swift -o /tmp/hako-network-ssid-cache-tests
           /tmp/hako-network-ssid-cache-tests
           swiftc Hako/Features/CodeWorkshop/WorkshopFileModels.swift Tests/WorkshopFileTests.swift -o /tmp/hako-workshop-file-tests
+          swiftc Hako/Features/CodeWorkshop/WorkshopProjectImageDisk.swift Tests/WorkshopProjectImageDiskTests.swift -o /tmp/hako-workshop-project-image-disk-tests
+          /tmp/hako-workshop-project-image-disk-tests
+          swiftc Hako/Features/CodeWorkshop/WorkshopModels.swift Hako/Features/CodeWorkshop/WorkshopDraft.swift Hako/Features/CodeWorkshop/WorkshopTranscript.swift Hako/Features/CodeWorkshop/WorkshopMessage.swift Hako/Features/CodeWorkshop/WorkshopFileModels.swift Hako/Features/CodeWorkshop/WorkshopProjectImageDisk.swift Hako/Features/CodeWorkshop/WorkshopArchivedImageCleanup.swift Tests/WorkshopArchiveCacheTests.swift -o /tmp/hako-workshop-archive-cache-tests
+          /tmp/hako-workshop-archive-cache-tests
           /tmp/hako-workshop-file-tests
           swiftc Hako/Shared/UI/AssistantMarkdown.swift Hako/Features/CodeWorkshop/WorkshopMessage.swift Hako/Features/CodeWorkshop/WorkshopMarkdownPreview.swift Tests/WorkshopMarkdownPreviewTests.swift -o /tmp/hako-workshop-markdown-preview-tests
           /tmp/hako-workshop-markdown-preview-tests
@@ -113,12 +125,16 @@ jobs:
           swiftc Hako/Features/CodeWorkshop/WorkshopMessage.swift Tests/WorkshopMessageTests.swift -o /tmp/hako-workshop-message-tests
           /tmp/hako-workshop-message-tests
           /tmp/hako-workshop-tests
-          swiftc Hako/Features/CodeWorkshop/WorkshopDraft.swift Tests/WorkshopDraftTests.swift -o /tmp/hako-workshop-draft-tests
+          swiftc Hako/Features/CodeWorkshop/WorkshopModels.swift Hako/Features/CodeWorkshop/WorkshopDraft.swift Tests/WorkshopDraftTests.swift -o /tmp/hako-workshop-draft-tests
           /tmp/hako-workshop-draft-tests
+          swiftc Hako/Shared/Infrastructure/AssistantComposerDraft.swift Hako/Shared/Infrastructure/AssistantConversationFiles.swift Hako/Shared/Infrastructure/AssistantConversationHistory.swift Tests/AssistantConversationHistoryTests.swift -o /tmp/hako-assistant-history-tests
+          /tmp/hako-assistant-history-tests
           swiftc Hako/Shared/UI/ConversationScrollFollowing.swift Hako/Features/CodeWorkshop/WorkshopModels.swift Hako/Features/CodeWorkshop/WorkshopTranscript.swift Tests/WorkshopTranscriptTests.swift -o /tmp/hako-workshop-transcript-tests
           /tmp/hako-workshop-transcript-tests
           swiftc Hako/Features/CodeWorkshop/WorkshopModels.swift Hako/Features/CodeWorkshop/WorkshopMessage.swift Hako/Features/CodeWorkshop/WorkshopTranscript.swift Hako/Features/CodeWorkshop/WorkshopTranscriptRenderer.swift Hako/Features/CodeWorkshop/WorkshopPersistence.swift Tests/WorkshopPerformanceTests.swift -o /tmp/hako-workshop-performance-tests
           /tmp/hako-workshop-performance-tests
+          swiftc Hako/Features/CodeWorkshop/WorkshopModels.swift Hako/Features/CodeWorkshop/WorkshopPersistence.swift Hako/Features/CodeWorkshop/WorkshopRestoration.swift Tests/WorkshopRestorationTests.swift -o /tmp/hako-workshop-restoration-tests
+          /tmp/hako-workshop-restoration-tests
           swiftc Hako/Features/CodeWorkshop/WorkshopSynchronization.swift Tests/WorkshopSynchronizationTests.swift -o /tmp/hako-workshop-sync-tests
           /tmp/hako-workshop-sync-tests
           swiftc Hako/Shared/Network/LocalNetworkEndpoint.swift Hako/Shared/Network/AppNetworkConfigurationStore.swift Hako/Features/CodeWorkshop/WorkshopNetworkConfiguration.swift Tests/LocalNetworkTests.swift -o /tmp/hako-local-network-tests
@@ -139,12 +155,14 @@ jobs:
           /tmp/hako-stocktrade-model-tests
           swiftc Hako/Shared/Infrastructure/MarketAPIUsage.swift Hako/Shared/Infrastructure/HTTPTransport.swift Hako/Shared/Infrastructure/Logging/HakoLog.swift Hako/Features/StockTrade/StockTradeModels.swift Hako/Features/StockTrade/StockTradeClient.swift Tests/StockTradeRoutingTests.swift -o /tmp/hako-stocktrade-routing-tests
           /tmp/hako-stocktrade-routing-tests
-          swiftc -target arm64-apple-macos14.0 Hako/Shared/Infrastructure/ExecutionDiagnostics.swift Hako/Shared/Infrastructure/MarketAPIUsage.swift Hako/Shared/Infrastructure/HTTPTransport.swift Hako/Shared/Infrastructure/SecureStorage.swift Hako/Shared/Infrastructure/Logging/HakoLog.swift Hako/Shared/Infrastructure/HakoError.swift Hako/Shared/HakoServer/AuthenticatedServerAccess.swift Hako/Shared/HakoServer/ConsoleSecurity.swift Hako/Shared/HakoServer/ConsoleWebLoginProtocol.swift Hako/Shared/HakoServer/ConsoleLoginPromptProtocol.swift Hako/Shared/HakoServer/ConsoleSessionRestoration.swift Hako/Shared/HakoServer/HakoServerCompatibility.swift Hako/Shared/HakoServer/ConsoleClient.swift Hako/Shared/HakoServer/NativeApplicationAuthorization.swift Hako/Features/StockTrade/StockTradeModels.swift Hako/Features/StockTrade/StockTradeClient.swift Hako/Features/StockTrade/StockTradeWorkflowModels.swift Hako/Features/StockTrade/StockTradeStore.swift Tests/StockTradeSessionTests.swift -o /tmp/hako-stocktrade-session-tests
+          swiftc -target arm64-apple-macos14.0 Hako/Shared/Infrastructure/ExecutionDiagnostics.swift Hako/Shared/Infrastructure/MarketAPIUsage.swift Hako/Shared/Infrastructure/HTTPTransport.swift Hako/Shared/Infrastructure/SecureStorage.swift Hako/Shared/Infrastructure/Logging/HakoLog.swift Hako/Shared/Infrastructure/HakoError.swift Hako/Shared/HakoServer/AuthenticatedServerAccess.swift Hako/Shared/HakoServer/ConsoleSecurity.swift Hako/Shared/HakoServer/ConsoleWebLoginProtocol.swift Hako/Shared/HakoServer/ConsoleLoginPromptProtocol.swift Hako/Shared/HakoServer/ConsoleSessionRestoration.swift Hako/Shared/HakoServer/HakoServerCompatibility.swift Hako/Shared/HakoServer/ConsoleClient.swift Hako/Shared/HakoServer/NativeApplicationAuthorization.swift Hako/Features/StockTrade/StockTradeModels.swift Hako/Features/StockTrade/StockTradeClient.swift Hako/Features/StockTrade/StockTradeStrategyModels.swift Hako/Features/StockTrade/StockTradeWorkflowModels.swift Hako/Features/StockTrade/StockTradeStore.swift Tests/StockTradeSessionTests.swift -o /tmp/hako-stocktrade-session-tests
           /tmp/hako-stocktrade-session-tests
       - name: Test Cerno workflow task contracts
         run: |
-          swiftc Hako/Features/StockTrade/StockTradeModels.swift Hako/Features/StockTrade/StockTradeWorkflowModels.swift Tests/StockTradeWorkflowTests.swift -o /tmp/hako-cerno-workflow-tests
+          swiftc Hako/Features/StockTrade/StockTradeModels.swift Hako/Features/StockTrade/StockTradeStrategyModels.swift Hako/Features/StockTrade/StockTradeWorkflowModels.swift Tests/StockTradeWorkflowTests.swift -o /tmp/hako-cerno-workflow-tests
           /tmp/hako-cerno-workflow-tests
+          swiftc Hako/Features/StockTrade/StockTradeStrategyModels.swift Tests/StockTradeStrategyTests.swift -o /tmp/hako-cerno-strategy-tests
+          /tmp/hako-cerno-strategy-tests Tests/Fixtures/cerno-strategy.json
       - name: Typecheck Console client without signing
         run: |
           swiftc Hako/Features/DeviceManagement/DeviceAndroidProtocol.swift Tests/DeviceAndroidTests.swift -o /tmp/hako-android-device-tests
@@ -205,12 +223,26 @@ jobs:
           /tmp/hako-cloud-recovery-tests
           swiftc Hako/Shared/Infrastructure/SecureStorage.swift Tests/CloudKeychainTests.swift -o /tmp/hako-cloud-keychain-tests
           /tmp/hako-cloud-keychain-tests
+          swiftc Hako/Shared/Infrastructure/HakoBackupPolicy.swift Tests/StartupPerformanceTests.swift -o /tmp/hako-startup-performance-tests
+          /tmp/hako-startup-performance-tests
       - name: Test execution diagnostics
         run: |
           swiftc Hako/Shared/Infrastructure/Logging/HakoLog.swift Hako/Shared/Infrastructure/MarketAPIUsage.swift Hako/Shared/Infrastructure/HTTPTransport.swift Hako/Shared/Infrastructure/ExecutionDiagnostics.swift Tests/ExecutionDiagnosticsTests.swift -o /tmp/hako-execution-diagnostics-tests
           /tmp/hako-execution-diagnostics-tests
           swiftc Hako/Shared/Infrastructure/Logging/HakoLog.swift Hako/Shared/Infrastructure/MarketAPIUsage.swift Hako/Shared/Infrastructure/HTTPTransport.swift Hako/Shared/Infrastructure/ExecutionDiagnostics.swift Hako/Features/Investment/InvestmentDiagnostics.swift Tests/InvestmentDiagnosticsTests.swift -o /tmp/hako-investment-diagnostics-tests
           /tmp/hako-investment-diagnostics-tests
+      - name: Test financial token persistence and JSON declarations
+        run: |
+          swiftc Hako/Shared/Infrastructure/SecureStorage.swift Hako/Shared/Infrastructure/Tokens/HakoTokenVault.swift Tests/HakoTokenVaultTests.swift -o /tmp/hako-token-vault-tests
+          /tmp/hako-token-vault-tests
+          swiftc Hako/Shared/Infrastructure/SecureStorage.swift Hako/Shared/Infrastructure/Tokens/HakoTokenVault.swift Hako/Shared/Infrastructure/Tokens/HakoTokenMetadata.swift Tests/HakoTokenMetadataTests.swift -o /tmp/hako-token-metadata-tests
+          /tmp/hako-token-metadata-tests
+      - name: Test child registration and credential validation
+        run: |
+          swiftc -swift-version 5 Hako/Shared/Infrastructure/SecureStorage.swift Hako/Shared/Infrastructure/Tokens/HakoTokenVault.swift Hako/Shared/Infrastructure/Tokens/HakoCredentialValidator.swift Tests/HakoCredentialValidatorTests.swift -o /tmp/hako-credential-validator-tests
+          /tmp/hako-credential-validator-tests
+          swiftc -swift-version 5 -target arm64-apple-macos14.0 Hako/Shared/Infrastructure/SecureStorage.swift Hako/Shared/Infrastructure/Tokens/HakoTokenVault.swift Hako/Shared/Infrastructure/Tokens/HakoTokenMetadata.swift Hako/Shared/Infrastructure/Tokens/HakoCredentialValidator.swift Hako/Shared/Infrastructure/Tokens/HakoCredentialValidationHTTP.swift Hako/Shared/Infrastructure/HakoApplicationIconSource.swift Hako/App/HakoApplicationModule.swift Hako/App/HakoApplications.swift Hako/Features/*/*ApplicationModule.swift Hako/Features/Investment/InvestmentCredentialValidators.swift Hako/Features/Crypto/CryptoCredentialValidators.swift Tests/Fixtures/HakoApplicationCompositionStubs.swift Tests/HakoApplicationRegistrationTests.swift -o /tmp/hako-application-registration-tests
+          /tmp/hako-application-registration-tests Tests/Fixtures/financial-tokens-v1.json
       - name: Test shortcut history retries
         run: |
           swiftc Hako/Shared/Infrastructure/Logging/HakoLog.swift Hako/Shared/Infrastructure/ExecutionDiagnostics.swift Hako/Shared/Infrastructure/HakoError.swift Hako/App/HakoShortcutHistory.swift Hako/Shared/Infrastructure/HakoShortcutSkip.swift Hako/Shared/Infrastructure/HakoShortcutExecution.swift Hako/App/HakoShortcutRegistry.swift Tests/HakoShortcutRetryTests.swift -o /tmp/hako-shortcut-retry-tests
@@ -239,7 +271,7 @@ jobs:
         run: |
           swiftc Hako/Shared/Infrastructure/HakoHTTPProxy.swift Tests/HTTPProxyTests.swift -o /tmp/hako-http-proxy-tests
           /tmp/hako-http-proxy-tests
-          swiftc Hako/Shared/Infrastructure/MarketAPIUsage.swift Hako/Shared/Infrastructure/HTTPTransport.swift Hako/Shared/Infrastructure/Logging/HakoLog.swift Hako/Shared/Infrastructure/HakoHTTPProxy.swift Hako/Shared/HakoServer/HakoProxyURLProtocol.swift Tests/HTTPProxyProtocolTests.swift -o /tmp/hako-http-proxy-protocol-tests
+          swiftc Hako/Shared/Infrastructure/MarketAPIUsage.swift Hako/Shared/Infrastructure/HTTPTransport.swift Hako/Shared/Infrastructure/Logging/HakoLog.swift Hako/Shared/Infrastructure/HakoHTTPProxy.swift Hako/Shared/HakoServer/HakoServerCompatibility.swift Hako/Shared/HakoServer/HakoProxyURLProtocol.swift Tests/HTTPProxyProtocolTests.swift -o /tmp/hako-http-proxy-protocol-tests
           /tmp/hako-http-proxy-protocol-tests
       - name: Test sports records, timestamps and annual GitHub synchronization
         run: |
@@ -290,7 +322,7 @@ jobs:
           /tmp/hako-qinglong-agent-tests
           swiftc Hako/Shared/Infrastructure/MarketAPIUsage.swift Hako/Shared/Infrastructure/HTTPTransport.swift Hako/Shared/Infrastructure/Logging/HakoLog.swift Hako/Features/Qinglong/QinglongProtocol.swift Hako/Features/Qinglong/QinglongRefresh.swift Hako/Features/Qinglong/QinglongClient.swift Tests/QinglongTests.swift -o /tmp/hako-qinglong-tests
           /tmp/hako-qinglong-tests
-          swiftc Hako/Shared/Infrastructure/AssistantToolCall.swift Hako/Shared/Infrastructure/AssistantStream.swift Hako/Shared/Infrastructure/AssistantComposerDraft.swift Hako/Shared/Infrastructure/AssistantConversationFiles.swift Hako/Shared/Infrastructure/MarketAPIUsage.swift Hako/Shared/Infrastructure/HTTPTransport.swift Hako/Shared/Infrastructure/SecureStorage.swift Hako/Shared/Infrastructure/Logging/HakoLog.swift Hako/Shared/Infrastructure/LanguageModel.swift Hako/Shared/Infrastructure/LanguageModelStreaming.swift Hako/Shared/Infrastructure/LanguageModelPresets.swift Hako/Shared/Infrastructure/LanguageModelAPIErrors.swift Hako/Shared/UI/AssistantMarkdown.swift Hako/Shared/UI/AssistantHTML.swift Hako/Shared/UI/AssistantPhotoImporter.swift Hako/Features/Qinglong/QinglongAgentToolCall.swift -target arm64-apple-macos14.0 -typecheck Hako/Features/Qinglong/QinglongProtocol.swift Hako/Features/Qinglong/QinglongRefresh.swift Hako/Features/Qinglong/QinglongClient.swift Hako/Features/Qinglong/QinglongStore.swift Hako/Features/Qinglong/QinglongAgentTools.swift Hako/Features/Qinglong/QinglongAgentProposal.swift Hako/Features/Qinglong/QinglongAgentConversation.swift Hako/Features/Qinglong/QinglongAgentSession.swift
+          swiftc Hako/Shared/Infrastructure/AssistantToolCall.swift Hako/Shared/Infrastructure/AssistantStream.swift Hako/Shared/Infrastructure/AssistantComposerDraft.swift Hako/Shared/Infrastructure/AssistantConversationFiles.swift Hako/Shared/Infrastructure/MarketAPIUsage.swift Hako/Shared/Infrastructure/HTTPTransport.swift Hako/Shared/Infrastructure/SecureStorage.swift Hako/Shared/Infrastructure/Logging/HakoLog.swift Hako/Shared/Infrastructure/LanguageModel.swift Hako/Shared/Infrastructure/LanguageModelStreaming.swift Hako/Shared/Infrastructure/LanguageModelPresets.swift Hako/Shared/Infrastructure/LanguageModelAPIErrors.swift Hako/Shared/UI/AssistantMarkdown.swift Hako/Shared/UI/AssistantHTML.swift Hako/Shared/UI/AssistantPhotoImporter.swift Hako/Features/Qinglong/QinglongAgentToolCall.swift -target arm64-apple-macos14.0 Hako/Shared/Infrastructure/AssistantConversationHistory.swift Hako/Shared/Infrastructure/AssistantHistoryMessage.swift -typecheck Hako/Features/Qinglong/QinglongProtocol.swift Hako/Features/Qinglong/QinglongRefresh.swift Hako/Features/Qinglong/QinglongClient.swift Hako/Features/Qinglong/QinglongStore.swift Hako/Features/Qinglong/QinglongAgentTools.swift Hako/Features/Qinglong/QinglongAgentProposal.swift Hako/Features/Qinglong/QinglongAgentConversation.swift Hako/Features/Qinglong/QinglongAgentSession.swift
       - name: Test ECS API signing, snapshots and terminal protocol
         run: |
           swiftc Hako/Features/CloudServers/ECSModels.swift Hako/Features/CloudServers/ECSNetworkModels.swift Tests/ECSNetworkTests.swift -o /tmp/hako-ecs-network-tests
@@ -306,11 +338,11 @@ jobs:
           /tmp/hako-crypto-model-tests
           swiftc Hako/Shared/Infrastructure/HakoError.swift Hako/Shared/Infrastructure/CSV.swift Hako/Features/Crypto/CryptoModels.swift Hako/Features/Crypto/CryptoChainHoldings.swift Tests/CryptoChainHoldingsTests.swift -o /tmp/hako-crypto-chain-holdings-tests
           /tmp/hako-crypto-chain-holdings-tests
-          swiftc Hako/Shared/Infrastructure/ExecutionDiagnostics.swift Hako/Shared/Infrastructure/Logging/HakoLog.swift Hako/Shared/Infrastructure/HakoError.swift Hako/Shared/Infrastructure/CSV.swift Hako/Shared/Infrastructure/MarketAPIUsage.swift Hako/Shared/Infrastructure/HTTPTransport.swift Hako/Shared/Infrastructure/SecureStorage.swift Hako/Features/Crypto/CryptoModels.swift Hako/Features/Crypto/CryptoCredential.swift Hako/Features/Crypto/CryptoClient.swift Hako/Features/Crypto/CryptoChainClient.swift Tests/CryptoChainTests.swift -o /tmp/hako-crypto-chain-tests
+          swiftc Hako/Shared/Infrastructure/ExecutionDiagnostics.swift Hako/Shared/Infrastructure/Logging/HakoLog.swift Hako/Shared/Infrastructure/HakoError.swift Hako/Shared/Infrastructure/CSV.swift Hako/Shared/Infrastructure/MarketAPIUsage.swift Hako/Shared/Infrastructure/HTTPTransport.swift Hako/Shared/Infrastructure/SecureStorage.swift Hako/Features/Crypto/CryptoModels.swift Hako/Features/Crypto/CryptoCredential.swift Hako/Shared/Infrastructure/Tokens/HakoTokenVault.swift Hako/Shared/Infrastructure/Tokens/HakoTokens.swift Hako/Shared/Infrastructure/Tokens/HakoTokenMetadata.swift Hako/Features/Crypto/CryptoClient.swift Hako/Features/Crypto/CryptoChainClient.swift Tests/CryptoChainTests.swift -o /tmp/hako-crypto-chain-tests
           /tmp/hako-crypto-chain-tests
-          swiftc Hako/Shared/Infrastructure/Logging/HakoLog.swift Hako/Shared/Infrastructure/HakoError.swift Hako/Shared/Infrastructure/CSV.swift Hako/Shared/Infrastructure/MarketAPIUsage.swift Hako/Shared/Infrastructure/HTTPTransport.swift Hako/Shared/Infrastructure/SecureStorage.swift Hako/Shared/GitHub/GitHubRepository.swift Hako/Features/Crypto/CryptoModels.swift Hako/Features/Crypto/CryptoChainHoldings.swift Hako/Features/Crypto/CryptoCredential.swift Hako/Features/Crypto/CryptoClient.swift Hako/Features/Crypto/CryptoChainClient.swift Hako/Features/Crypto/CryptoHistory.swift Hako/Features/Crypto/CryptoFundingRates.swift Hako/Features/Crypto/CryptoStore.swift Hako/Shared/Infrastructure/ExecutionDiagnostics.swift Tests/CryptoStoreTests.swift -o /tmp/hako-crypto-store-tests
+          swiftc Hako/Shared/Infrastructure/Logging/HakoLog.swift Hako/Shared/Infrastructure/HakoError.swift Hako/Shared/Infrastructure/CSV.swift Hako/Shared/Infrastructure/MarketAPIUsage.swift Hako/Shared/Infrastructure/HTTPTransport.swift Hako/Shared/Infrastructure/SecureStorage.swift Hako/Shared/GitHub/GitHubRepository.swift Hako/Features/Crypto/CryptoModels.swift Hako/Features/Crypto/CryptoChainHoldings.swift Hako/Features/Crypto/CryptoCredential.swift Hako/Shared/Infrastructure/Tokens/HakoTokenVault.swift Hako/Shared/Infrastructure/Tokens/HakoTokens.swift Hako/Shared/Infrastructure/Tokens/HakoTokenMetadata.swift Hako/Features/Crypto/CryptoClient.swift Hako/Features/Crypto/CryptoChainClient.swift Hako/Features/Crypto/CryptoHistory.swift Hako/Features/Crypto/CryptoFundingRates.swift Hako/Features/Crypto/CryptoStore.swift Hako/Shared/Infrastructure/ExecutionDiagnostics.swift Tests/CryptoStoreTests.swift -o /tmp/hako-crypto-store-tests
           /tmp/hako-crypto-store-tests
-          swiftc Hako/Shared/Infrastructure/ExecutionDiagnostics.swift Hako/Shared/Infrastructure/Logging/HakoLog.swift Hako/Shared/Infrastructure/HakoError.swift Hako/Shared/Infrastructure/CSV.swift Hako/Shared/Infrastructure/MarketAPIUsage.swift Hako/Shared/Infrastructure/HTTPTransport.swift Hako/Shared/Infrastructure/SecureStorage.swift Hako/Features/Crypto/CryptoModels.swift Hako/Features/Crypto/CryptoCredential.swift Hako/Features/Crypto/CryptoClient.swift Hako/Features/Crypto/CryptoFundingRates.swift Hako/Features/Crypto/CryptoHistory.swift Tests/CryptoFundingRatesTests.swift -o /tmp/hako-crypto-funding-tests
+          swiftc Hako/Shared/Infrastructure/ExecutionDiagnostics.swift Hako/Shared/Infrastructure/Logging/HakoLog.swift Hako/Shared/Infrastructure/HakoError.swift Hako/Shared/Infrastructure/CSV.swift Hako/Shared/Infrastructure/MarketAPIUsage.swift Hako/Shared/Infrastructure/HTTPTransport.swift Hako/Shared/Infrastructure/SecureStorage.swift Hako/Features/Crypto/CryptoModels.swift Hako/Features/Crypto/CryptoCredential.swift Hako/Shared/Infrastructure/Tokens/HakoTokenVault.swift Hako/Shared/Infrastructure/Tokens/HakoTokens.swift Hako/Shared/Infrastructure/Tokens/HakoTokenMetadata.swift Hako/Features/Crypto/CryptoClient.swift Hako/Features/Crypto/CryptoFundingRates.swift Hako/Features/Crypto/CryptoHistory.swift Tests/CryptoFundingRatesTests.swift -o /tmp/hako-crypto-funding-tests
           /tmp/hako-crypto-funding-tests
   build:
     if: github.ref_name == github.event.repository.default_branch

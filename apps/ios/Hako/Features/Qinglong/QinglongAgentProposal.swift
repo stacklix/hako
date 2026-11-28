@@ -29,9 +29,7 @@ extension QinglongAgentProposal {
                 let result = try await client.saveEnvironment(item, fields: action.contentFields, enabled: action.enabled ?? !(item?.disabled ?? false))
                 if let issue = result.stateError { throw QinglongFailure(message: issue, outcomeUnknown: true) }
             case .subscriptions:
-                var fields = action.fields
-                if action.kind == .create { fields["type"] = "public-repo"; fields["schedule_type"] = "crontab" }
-                let body = item?.editPayload(fields) ?? .fields(fields)
+                let body = try QinglongSubscription.payload(action.fields, item: item)
                 _ = try await client.call(["subscriptions"], method: action.kind == .create ? "POST" : "PUT", body: body)
             case .scripts, .configs:
                 let item = currentItem ?? QinglongItem(resource: .scripts, raw: .fields(["title": action.fields["filename"] ?? "", "parent": action.fields["directory"] ?? ""]))

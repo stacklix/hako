@@ -57,22 +57,21 @@ struct CodeWorkshopView: View {
     @State private var navigationOwner = BuildPushSubscription.shared.workshopNavigationID
     @State private var synchronizationOwner = UUID()
     @State private var settingsPresented = false
+    @State private var usagePresented = false
     @State private var creating = false
     @State private var conversation: WorkshopConversation?
     @State private var pendingArchive: WorkshopSession?
-    @State private var quotaState = WorkshopQuotaState()
+    @StateObject private var quotaState = WorkshopQuotaState()
     @State private var quotaVisit = UUID()
     @State private var quotaPageVisible = false
-    @State private var clearQuotaCache = false
+    @State private var displayedAt = Date.now
 
     private var quotaRefreshID: String {
         store.scope + "|" + store.selectedAgentID + "|\(quotaVisit)|\(quotaPageVisible && store.authenticated && conversation == nil && !creating && !settingsPresented)"
     }
 
     var body: some View {
-        TimelineView(.periodic(from: .now, by: 60)) { timeline in
-            page(at: timeline.date)
-        }
+        page(at: displayedAt)
         .task(id: push.workshopNavigation) {
             guard let link = push.workshopLink,
                   push.workshopNavigation.accepts(ownerID: navigationOwner, noticeID: link.id) else { return }
@@ -86,6 +85,23 @@ struct CodeWorkshopView: View {
             Button("确认归档") { archive(session) }
         } message: { session in
             Text("确定归档「\(session.title)」吗？归档后可在「已归档」列表中查看和恢复。")
+        }
+        .task(id: quotaPageVisible) {
+            guard quotaPageVisible else { return }
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .seconds(60)) } catch { return }
+                displayedAt = .now
+            }
+        }
+        .onAppear {
+            guard !quotaPageVisible else { return }
+            displayedAt = .now; quotaVisit = UUID(); quotaPageVisible = true
+            WorkshopRuntime.shared.enter(synchronizationOwner)
+        }
+        .onDisappear {
+            guard quotaPageVisible else { return }
+            quotaPageVisible = false
+            WorkshopRuntime.shared.leave(synchronizationOwner)
         }
     }
 
@@ -107,11 +123,16 @@ struct CodeWorkshopView: View {
 
     private func page(at date: Date) -> some View {
         let items = store.sessionListItems(at: date)
+        // A live quota reply can arrive after this minute's page timestamp.
+        // Validate it against the state update time rather than a stale tick.
+        let quotaDate = max(date, quotaState.displayedAt)
         return List {
             Section {
                 VStack(alignment: .leading, spacing: 16) {
                     heading
-                    if !store.authenticated {
+                    if store.restoringLocalState {
+                        Text("正在恢复本地会话…").font(.subheadline).foregroundStyle(HakoStyle.muted)
+                    } else if !store.authenticated {
                         ContentUnavailableView("请先登录服务器", systemImage: "server.rack",
                             description: Text("在 Hako 首页的「设置 → 服务器与登录」完成连接，然后返回代码工坊。"))
                     } else if let agent = store.selectedAgent {
@@ -119,16 +140,6 @@ struct CodeWorkshopView: View {
                             Text("此电脑的 Agent 尚不支持代码工坊，请更新 Windows Agent 后重新连接。")
                                 .font(.subheadline).foregroundStyle(HakoStyle.muted)
                         } else {
-                            Button {
-                                quotaState.prepareManualRefresh()
-                                clearQuotaCache = true
-                                quotaVisit = UUID()
-                            } label: {
-                                WorkshopQuotaView(store: store, agent: agent, state: quotaState)
-                                    .equatable()
-                                    .id(agent.id)
-                            }
-                            .accessibilityHint("清空缓存并重新获取额度")
                             VStack(alignment: .leading, spacing: 4) {
                                 applicationTabs
                                 HStack {
@@ -201,12 +212,30 @@ struct CodeWorkshopView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                Button { settingsPresented = true } label: { Image(systemName: "slider.horizontal.3") }
-                    .accessibilityLabel("代码工坊设置")
+                HStack(spacing: 8) {
+                    if store.authenticated, let agent = store.selectedAgent, agent.supported {
+                        Button { usagePresented = true } label: {
+                            WorkshopUsageIndicator(window: quotaState.identity == store.settingsAccount + "|" + agent.id
+                                ? quotaState.cached?.snapshot(at: quotaDate)?.weeklyWindow : nil, date: quotaDate)
+                        }
+                        .accessibilityLabel("Codex 用量详情")
+                    }
+                    Button { settingsPresented = true } label: { Image(systemName: "slider.horizontal.3") }
+                        .accessibilityLabel("代码工坊设置")
+                        .disabled(store.restoringLocalState)
+                }
+                .font(.system(size: 19, weight: .medium))
+                .buttonStyle(WorkshopToolbarButtonStyle())
             }
+            .sharedBackgroundVisibility(.hidden)
         }
         .refreshable { await store.refresh() }
         .sheet(isPresented: $settingsPresented) { WorkshopSettingsView(store: store) }
+        .sheet(isPresented: $usagePresented) {
+            if let agent = store.selectedAgent {
+                WorkshopUsageSheet(store: store, agent: agent, state: quotaState)
+            }
+        }
         .sheet(isPresented: $creating) {
             if let application = store.selectedApplication, let agent = store.selectedAgent {
                 WorkshopNewSessionView(application: application) { name in
@@ -225,20 +254,16 @@ struct CodeWorkshopView: View {
             }
         }
         .onChange(of: store.scope) { _, _ in
-            conversation = nil; creating = false; settingsPresented = false; pendingArchive = nil
+            conversation = nil; creating = false; settingsPresented = false; usagePresented = false; pendingArchive = nil
         }
-        .onChange(of: store.selectedAgentID) { _, _ in pendingArchive = nil }
+        .onChange(of: store.selectedAgentID) { _, _ in pendingArchive = nil; usagePresented = false }
         .onChange(of: store.selectedApplicationID) { _, _ in pendingArchive = nil }
         .onChange(of: store.showingArchived) { _, _ in pendingArchive = nil }
         .task(id: quotaRefreshID) {
             guard quotaPageVisible, conversation == nil, !creating, !settingsPresented, store.authenticated,
                   let agent = store.selectedAgent, agent.supported else { return }
-            let clearCache = clearQuotaCache
-            clearQuotaCache = false
-            await quotaState.refresh(store: store, agent: agent, clearCache: clearCache)
+            await quotaState.refresh(store: store, agent: agent, clearCache: false)
         }
-        .onAppear { quotaVisit = UUID(); quotaPageVisible = true; WorkshopRuntime.shared.enter(synchronizationOwner) }
-        .onDisappear { quotaPageVisible = false; WorkshopRuntime.shared.leave(synchronizationOwner) }
     }
 
     private func archive(_ session: WorkshopSession) {
@@ -271,6 +296,7 @@ struct CodeWorkshopView: View {
                 .font(.caption).frame(minHeight: 44)
             }
             .buttonStyle(.plain).accessibilityLabel("选择执行电脑")
+            .disabled(store.restoringLocalState)
         }
     }
 
@@ -363,19 +389,40 @@ struct CodeWorkshopView: View {
     }
 }
 
-// Keep scroll-position geometry out of the header's view construction. Only a
-// change in horizontal capacity invalidates this view's tab partition.
+private struct WorkshopToolbarButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .frame(width: 44, height: 44)
+            .foregroundStyle(HakoStyle.text)
+            .background(HakoStyle.card, in: Circle())
+            .contentShape(Circle())
+            .opacity(isEnabled ? (configuration.isPressed ? 0.6 : 1) : 0.4)
+    }
+}
+
+// Read the offered width without feeding the measured layout back into State.
 private struct WorkshopApplicationTabs: View {
     let applications: [WorkshopApplication]
     let selectedID: String
     let select: (String) -> Void
-    @State private var capacity = 1
 
     var body: some View {
+        GeometryReader { geometry in
+            let width = max(0, geometry.size.width)
+            let capacity = CGFloat(applications.count * 78) <= width
+                ? applications.count : max(1, Int((width - 64) / 78))
+            tabs(capacity: capacity)
+        }
+        .frame(height: 44)
+    }
+
+    private func tabs(capacity: Int) -> some View {
         let visible = Array(applications.prefix(capacity))
         let overflow = Array(applications.dropFirst(capacity))
         let overflowSelection = overflow.first { $0.id == selectedID }
-        HStack(spacing: 4) {
+        return HStack(spacing: 4) {
             ForEach(visible) { application in
                 Button { select(application.id) } label: {
                     tabLabel(application.name, selected: application.id == selectedID)
@@ -404,10 +451,6 @@ private struct WorkshopApplicationTabs: View {
         .background(alignment: .bottom) { HakoStyle.line.frame(height: 1) }
         .accessibilityElement(children: .contain).accessibilityLabel("应用")
         .frame(maxWidth: .infinity, minHeight: 44, maxHeight: 44, alignment: .leading)
-        .onGeometryChange(for: Int.self) { geometry in
-            let width = max(0, geometry.size.width)
-            return CGFloat(applications.count * 78) <= width ? applications.count : max(1, Int((width - 64) / 78))
-        } action: { capacity = $0 }
     }
 
     private func tabLabel(_ name: String, selected: Bool) -> some View {
@@ -437,10 +480,12 @@ private struct WorkshopSettingsView: View {
                     if let agent = store.selectedAgent {
                         Button { showingGenerationDefaults = true } label: {
                             HStack {
-                                Text("默认生成设置")
+                                Text("默认生成设置").foregroundStyle(.primary)
                                 Spacer()
                                 Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
                             }
+                            .frame(maxWidth: .infinity, minHeight: 44)
+                            .contentShape(Rectangle())
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
@@ -457,9 +502,11 @@ private struct WorkshopSettingsView: View {
                             Image(systemName: "chevron.right").font(.caption).foregroundStyle(.secondary)
                         }
                         .frame(maxWidth: .infinity, minHeight: 44)
-                        .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
-                        .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
+                        .contentShape(Rectangle())
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
+                    .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
                     Text("使用电脑上已登录的 Codex。默认自动审批，也可在会话中选择请求确认、完全访问或跟随电脑配置。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }

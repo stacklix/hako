@@ -42,6 +42,7 @@ enum InvestmentQuoteSource: String, CaseIterable, Identifiable {
     var id: Self { self }
     var title: String { self == .tushare ? "Tushare Pro" : "Twelve Data" }
     var credential: String { self == .tushare ? "API Token" : "API Key" }
+    var credentialKey: String { self == .tushare ? "tushare.token" : "twelve-data.api-key" }
 }
 
 struct InvestmentInstrumentSearch: Equatable {
@@ -510,11 +511,11 @@ struct InvestmentQuoteProvider {
         }
         var today = today
         if let market = InvestmentTradingCalendar.market(for: asset) {
-            guard let closed = InvestmentTradingCalendar.lastClosed(calendars, market: market, now: now) else {
+            guard let closed = InvestmentTradingCalendar.lastDailyQuoteDay(calendars, market: market, now: now) else {
                 throw InvestmentError.noMarketData("\(market) 交易日历待更新，暂不查询未知交易日。")
             }
             today = min(today, closed)
-            guard start <= today else { throw InvestmentError.noMarketData("该区间尚无已结束的交易日。") }
+            guard start <= today else { throw InvestmentError.noMarketData("该区间尚未到日线获取时间。") }
         }
         let symbol = InvestmentQuoteSymbol(asset)
         if asset.usesTushareEquityData {

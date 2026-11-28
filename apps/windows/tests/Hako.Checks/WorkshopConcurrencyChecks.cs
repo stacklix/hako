@@ -39,7 +39,7 @@ internal static class WorkshopConcurrencyChecks
         }
         try
         {
-            await using var service = new CodeWorkshop(storage, code, directory, HoldStartup);
+            await using var service = new CodeWorkshop(storage, code, directory, HoldStartup, workerLimit: 5);
             JsonElement lastRequest = default;
             for (var index = 0; index < 4; index++)
             {

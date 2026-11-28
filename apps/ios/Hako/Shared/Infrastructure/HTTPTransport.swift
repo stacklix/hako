@@ -21,7 +21,7 @@ enum HTTPTransport {
 
     static func data(for request: URLRequest, using session: URLSession = shared,
                      source: HakoLogSource = .hako, secrets: [String] = [],
-                     logBody: Bool = true, marketUsage: MarketAPIUsage? = .shared,
+                     logBody: Bool = true, logErrorBody: Bool = false, marketUsage: MarketAPIUsage? = .shared,
                      marketGate: MarketAPIRequestGate? = .shared) async throws -> (Data, URLResponse) {
         var preparedLogRequest = request
         if !logBody { preparedLogRequest.httpBody = nil }
@@ -29,7 +29,10 @@ enum HTTPTransport {
         let marketReason = MarketAPIRequestContext.reason
         let send: @Sendable () async throws -> (Data, URLResponse) = {
             try await perform(logRequest, source: source, secrets: secrets,
-                              requestBodyBytes: request.httpBody?.count, body: { logBody ? $0 : nil }) {
+                              requestBodyBytes: request.httpBody?.count, body: { value, response in
+                let failed = (response as? HTTPURLResponse).map { $0.statusCode >= 400 } ?? false
+                return logBody || (logErrorBody && failed) ? value : nil
+            }) {
                 try Task.checkCancellation()
                 let started = Date.now
                 do {
@@ -70,7 +73,7 @@ enum HTTPTransport {
 
     static func download(for request: URLRequest, using session: URLSession,
                          source: HakoLogSource, secrets: [String] = []) async throws -> (URL, URLResponse) {
-        try await perform(request, source: source, secrets: secrets, body: { file in
+        try await perform(request, source: source, secrets: secrets, body: { file, _ in
             guard let size = try? file.resourceValues(forKeys: [.fileSizeKey]).fileSize,
                   size <= HTTPLogRedactor.bodyLimit else { return nil }
             return try? Data(contentsOf: file)
@@ -80,14 +83,14 @@ enum HTTPTransport {
     }
 
     private static func perform<Value>(
-        _ request: URLRequest, source: HakoLogSource, secrets: [String], requestBodyBytes: Int? = nil, body: (Value) -> Data?,
+        _ request: URLRequest, source: HakoLogSource, secrets: [String], requestBodyBytes: Int? = nil, body: (Value, URLResponse) -> Data?,
         send: () async throws -> (Value, URLResponse)
     ) async throws -> (Value, URLResponse) {
         let started = ContinuousClock.now
         do {
             let (value, response) = try await send()
             record(request, source: source, secrets: secrets, started: started, requestBodyBytes: requestBodyBytes,
-                   response: response as? HTTPURLResponse, data: body(value))
+                   response: response as? HTTPURLResponse, data: body(value, response))
             return (value, response)
         } catch {
             record(request, source: source, secrets: secrets, started: started, requestBodyBytes: requestBodyBytes, error: error)
@@ -236,7 +239,7 @@ struct HTTPLogRedactor {
         return HakoLog.sanitize(text(value),limit:limit)
     }
     private mutating func body(_ data:Data?, contentType:String?) -> String {
-        guard let data else { return "[文件或流式正文未读取]" }
+        guard let data else { return "[正文未记录或未读取]" }
         guard !data.isEmpty else { return "[空]" }
         guard data.count <= Self.bodyLimit else { return "[\(data.count) 字节，超过 \(Self.bodyLimit) 字节，正文已省略]" }
         let mime=contentType?.lowercased() ?? ""

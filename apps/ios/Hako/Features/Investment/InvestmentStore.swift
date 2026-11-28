@@ -50,10 +50,11 @@ final class InvestmentStore: ObservableObject {
             Task { @MainActor in self?.discardExpiredSession() }
         }
     }
-    private let secrets = SecureStorage.namespace("me.stackli.hako.investment")
     private var loaded = false
     @Published private(set) var ledgerRevision = UUID()
     private var dailySnapshotTask: Task<Void, Never>?
+    private var dailySnapshotRequestID: UUID?
+    @Published private(set) var snapshotUpdateStatus: String?
     @Published private(set) var snapshotWriteRunning = false
     private var lastAutomaticRefresh: Date?
     private var lastAutomaticCurrencies: Set<InvestmentCurrency> = []
@@ -97,6 +98,8 @@ final class InvestmentStore: ObservableObject {
         let signedOut = loadedScope != nil && (authentication.logoutPending || (!authentication.authenticated && !authentication.hasSavedSession))
         guard scopeChanged || sessionChanged || signedOut else { return }
         dailySnapshotTask?.cancel()
+        dailySnapshotRequestID = nil
+        snapshotUpdateStatus = nil
         ledgerRevision = UUID()
         self.serverContext = nil
         loadedScope = nil
@@ -201,6 +204,8 @@ final class InvestmentStore: ObservableObject {
 
     func loadForSynchronization() async throws {
         dailySnapshotTask?.cancel()
+        dailySnapshotRequestID = nil
+        snapshotUpdateStatus = nil
         lastServerReadSucceeded = false
         await load(force: true, scheduleSnapshots: false)
         try Task.checkCancellation()
@@ -696,9 +701,21 @@ final class InvestmentStore: ObservableObject {
         dailySnapshotTask?.cancel()
         guard book.needsDailySnapshots(through: end) || serverState?.dirtyFrom != nil else {
             dailySnapshotTask = nil
+            dailySnapshotRequestID = nil
+            snapshotUpdateStatus = nil
             return
         }
+        let requestID = UUID()
+        dailySnapshotRequestID = requestID
+        snapshotUpdateStatus = "等待更新快照…"
         dailySnapshotTask = Task { [weak self] in
+            defer {
+                if let self, self.dailySnapshotRequestID == requestID {
+                    self.snapshotUpdateStatus = nil
+                    self.dailySnapshotRequestID = nil
+                    self.dailySnapshotTask = nil
+                }
+            }
             do {
                 guard let self else { return }
                 try await InvestmentDiagnostics.run("自动更新日终快照", independent: true) {
@@ -707,7 +724,11 @@ final class InvestmentStore: ObservableObject {
                         HakoExecutionDiagnostics.record("跳过日终快照", detail: "已计算至昨天，且无待重算日期。")
                         return
                     }
+                    self.snapshotUpdateStatus = "正在补充快照行情…"
                     try await self.refreshSnapshotHistory(fullHistory: false)
+                    try Task.checkCancellation()
+                    guard self.dailySnapshotRequestID == requestID else { throw CancellationError() }
+                    self.snapshotUpdateStatus = "正在计算并保存快照…"
                     _ = try await self.saveDailySnapshots()
                 }
             } catch is CancellationError {
@@ -718,29 +739,12 @@ final class InvestmentStore: ObservableObject {
         }
     }
 
-    func saveKey(_ value: String, for source: InvestmentQuoteSource) throws {
-        let key = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        if key.isEmpty {
-            try secrets.delete(account: source.rawValue)
-            configuredSources.remove(source)
-        } else {
-            guard key.utf8.allSatisfy({ (33...126).contains($0) }) else {
-                throw InvestmentError.invalid("行情凭据只能包含可见 ASCII 字符。")
-            }
-            try secrets.save(Data(key.utf8), account: source.rawValue, accessibility: .afterFirstUnlock)
-            configuredSources.insert(source)
-        }
-        lastAutomaticRefresh = nil
-        lastFundNAVRefresh = nil
-        quoteStatus = ""
+    func refreshCredentialStatus() {
+        configuredSources = Set(keys().keys)
     }
 
     func loadKey(for source: InvestmentQuoteSource) throws -> String {
-        guard let data = try secrets.read(account: source.rawValue) else { return "" }
-        guard let value = String(data: data, encoding: .utf8) else {
-            throw InvestmentError.invalid("无法读取已保存的行情凭据。")
-        }
-        return value
+        try HakoTokens.read(source.credentialKey)
     }
 
     private func keys() -> [InvestmentQuoteSource: String] {

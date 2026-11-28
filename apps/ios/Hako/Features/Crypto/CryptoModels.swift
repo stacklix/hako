@@ -122,6 +122,33 @@ struct CryptoBinanceDistributionPart: Identifiable, Equatable {
     }
 }
 
+enum CryptoChainHistory {
+    static func records(_ history: [CryptoRecord], snapshots: [CryptoWalletSnapshot?], hasErrors: Bool,
+                        from start: Date, through end: Date, now: Date = .now) -> [CryptoRecord] {
+        let calendar=CryptoDay.calendar, today=CryptoDay.key(now)
+        var days=[String:CryptoRecord]()
+        for record in history where record.kind == "portfolio" {
+            guard let amount=record.values["chain"], amount.isFinite else { continue }
+            if record.sampledAt >= (days[record.day]?.sampledAt ?? -.infinity) { days[record.day]=record }
+        }
+        // Only a complete, freshly collected wallet set can supply today's estimate.
+        // A stale or failed wallet must not turn yesterday's balance into a new observation.
+        let complete=snapshots.compactMap { $0 }
+        if !hasErrors, !snapshots.isEmpty, complete.count == snapshots.count,
+           complete.allSatisfy({ CryptoDay.key($0.sampledAt) == today && $0.total.isFinite &&
+               $0.assets.allSatisfy { $0.value?.isFinite == true } }) {
+            let total=complete.reduce(0) { $0+$1.total }
+            if total.isFinite {
+                days[today]=CryptoRecord(kind:"portfolio",day:today,
+                    sampledAt:complete.map(\.sampledAt).max()!.timeIntervalSince1970,scope:"",
+                    values:["chain":total])
+            }
+        }
+        let first=calendar.startOfDay(for:start), last=min(calendar.startOfDay(for:end),calendar.startOfDay(for:now))
+        return days.values.filter { $0.date >= first && $0.date <= last }.sorted { $0.day < $1.day }
+    }
+}
+
 enum CryptoBinanceHistory {
     struct Sample: Identifiable, Equatable {
         let date: Date

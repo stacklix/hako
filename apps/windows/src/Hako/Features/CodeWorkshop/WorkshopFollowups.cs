@@ -28,7 +28,7 @@ internal sealed partial class CodeWorkshop
             current.Message, startedAt = current.State == "queued" ? 0 : current.StartedAt,
             finishedAt = ProcessingFinishedAt(current),
             model = current.EffectiveModel, reasoningEffort = current.EffectiveReasoningEffort,
-            contextUsage = current.ContextUsage };
+            contextUsage = current.ContextUsage, prediction = current.Prediction, predictionPending = current.PredictionPending };
     }
     private object FollowupSummary(WorkshopJob job) => new { job.Id, message = job.InputMessage,
         job.ImageIds, state = job.State == "completed" ? "sent" : job.State, job.Revision, job.QueueOrder, detail = job.Message, job.QuestionId };

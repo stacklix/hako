@@ -41,10 +41,11 @@ public sealed class AgentRuntime : IAsyncDisposable
         dispatcher.StreamPort = () => lan.Port;
         lan.OpenStream = (id, socket, token) => Android.Video.AcceptAsync(id, socket, token);
         dispatcher.LanSnapshot = lan.Snapshot;
-        Workshop = new WorkshopService(store.DirectoryPath, Connection, lan);
+        Workshop = new WorkshopService(store.DirectoryPath, Connection, lan, prewarmWorkers: running);
         Connection.StatusChanged += text => StatusChanged?.Invoke(text);
         dispatcher.MetricsReceived += value => MetricsReceived?.Invoke(value);
-        if (running) rpc = new LocalRpcServer(LocalRpc.MainPipe(store.DirectoryPath), HandleLocalAsync);
+        if (running) rpc = new LocalRpcServer(LocalRpc.MainPipe(store.DirectoryPath), HandleLocalAsync,
+            LocalRpcLog.ForProfile(store.DirectoryPath, "main"));
     }
     public async Task InitializeAsync(bool autoConnect)
     {

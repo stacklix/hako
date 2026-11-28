@@ -27,21 +27,23 @@ struct InvestmentOverview: View {
     let presentation: InvestmentPresentation
     var showsArchived = false
     var insuranceGainBasis: InvestmentInsuranceGainBasis = .cashValue
-    var snapshotWriteRunning = false
+    var updateStatus: String?
     let openAccount: (UUID) -> Void
     @State private var accountsExpanded = false
+    @State private var trendLoading = true
+    @State private var calendarLoading = true
 
     private var today: Date { InvestmentBook.day() }
 
     var body: some View {
         InvestmentScroll {
             summary
-            InvestmentPerformanceChart(book: book, bookVersion: bookVersion)
+            InvestmentPerformanceChart(book: book, bookVersion: bookVersion, onLoadingChange: { trendLoading = $0 })
             InvestmentCard {
                 InvestmentAccountAnalysis(rows: presentation.accountAnalysis.filter { showsArchived || !$0.isArchived },
                                           day: presentation.day)
             }
-            InvestmentProfitCalendar(book: book, bookVersion: bookVersion)
+            InvestmentProfitCalendar(book: book, bookVersion: bookVersion, onLoadingChange: { calendarLoading = $0 })
         }
     }
 
@@ -77,21 +79,17 @@ struct InvestmentOverview: View {
         let dayGain = presentation.dailyGain
         let dollars = presentation.dollars
         let historicalGain = presentation.historicalGain(insuranceBasis: insuranceGainBasis)
-        let showsSnapshotProgress = snapshotWriteRunning && !book.accounts.isEmpty &&
-            (current == nil || dayGain == nil || historicalGain == nil)
+        let status = updateStatus ?? (trendLoading ? "正在更新投资趋势…" : calendarLoading ? "正在汇总盈亏月历…" : nil)
         return InvestmentCard {
             VStack(alignment: .leading, spacing: 4) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text("总资产 · CNY").font(.caption).foregroundStyle(.secondary)
                     Spacer(minLength: 0)
-                    if showsSnapshotProgress {
-                        HStack(spacing: 4) {
-                            ProgressView().controlSize(.mini).accessibilityHidden(true)
-                            Text("快照计算中…").font(.caption2)
-                        }
+                    Text(status ?? "更新完成").font(.caption2)
                         .foregroundStyle(.secondary)
-                        .accessibilityElement(children: .combine)
-                    }
+                        .lineLimit(1).minimumScaleFactor(0.8)
+                        .opacity(status == nil ? 0 : 1)
+                        .accessibilityHidden(status == nil)
                 }
                 Text(InvestmentText.money(current?.value, .cny))
                     .font(.title2.weight(.semibold)).monospacedDigit()

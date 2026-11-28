@@ -1,9 +1,53 @@
 import SwiftUI
 
 enum HakoApplications {
-    @MainActor static func agentSettings() -> some View { AgentSettingsSheet() }
-    @MainActor static func httpProxySettings() -> some View { HTTPProxySettingsSheet() }
-    @MainActor static func webhookSettings() -> some View { NotificationManagementView() }
+    // The only host list of child entry points. Capabilities live in each module.
+    static let modules: [HakoApplicationModule] = {
+        let modules: [HakoApplicationModule] = [
+            CodeWorkshopApplicationModule.module,
+            SwissArmyKnifeApplicationModule.module,
+            HeadplaneApplicationModule.module,
+            RouterApplicationModule.module,
+            QinglongApplicationModule.module,
+            CloudServersApplicationModule.module,
+            ContainersApplicationModule.module,
+            DeviceManagementApplicationModule.module,
+            InvestmentApplicationModule.module,
+            CryptoApplicationModule.module,
+            StockTradeApplicationModule.module,
+            SportsApplicationModule.module,
+            UsageApplicationModule.module,
+            HTTPProxyApplicationModule.module,
+            NotificationManagementApplicationModule.module
+        ]
+        let applications = modules.compactMap(\.application)
+        precondition(Set(applications) == Set(Application.allCases) && applications.count == Application.allCases.count,
+                     "Every application must have exactly one module entry")
+        precondition(modules.allSatisfy { $0.application == nil || ($0.category != nil && $0.destination != nil) },
+                     "Visible applications must provide a category and page")
+        return modules
+    }()
+
+    static var credentialDeclarations: [HakoCredentialDeclaration] {
+        modules.compactMap { module in
+            guard !module.credentials.isEmpty else { return nil }
+            guard let application = module.application, let id = module.applicationID else {
+                preconditionFailure("Credential declarations require an application identity")
+            }
+            return HakoCredentialDeclaration(application: id, applicationName: application.rawValue,
+                                             credentials: module.credentials)
+        }
+    }
+
+    @MainActor private static let registration: HakoApplicationRegistration = {
+        let registration = HakoApplicationRegistration()
+        for module in modules { module.register(registration) }
+        return registration
+    }()
+    @MainActor static var credentialValidators: HakoCredentialValidatorRegistry { registration.credentialValidators }
+    @MainActor static func agentSettings() -> some View { registration.setting(.agents) }
+    @MainActor static func httpProxySettings() -> some View { registration.setting(.httpProxy) }
+    @MainActor static func webhookSettings() -> some View { registration.setting(.webhooks) }
 
     enum Category: String, CaseIterable {
         // Raw values identify saved application orders; titles are the visible category names.
@@ -12,16 +56,11 @@ enum HakoApplications {
         var title: String { self == .management ? "管理面板" : rawValue }
 
         var applications: [Application] {
-            switch self {
-            case .development: [.codeWorkshop, .swissArmyKnife]
-            case .management: [.headplane, .router, .qinglong, .cloudServers, .containers, .devices]
-            case .finance: [.investment, .crypto, .stockTrade]
-            case .life: [.sports, .usage]
-            }
+            HakoApplications.modules.compactMap { $0.category == self ? $0.application : nil }
         }
     }
 
-    enum Application: String, Identifiable {
+    enum Application: String, CaseIterable, Identifiable {
         case headplane = "组网管理", qinglong = "青龙面板", cloudServers = "云服务器"
         case containers = "容器管理", devices = "设备管理", sports = "运动记录", usage = "使用时间"
         case investment = "投资记账", crypto = "加密资产", stockTrade = "A 股选股"
@@ -30,105 +69,37 @@ enum HakoApplications {
         case swissArmyKnife = "瑞士军刀"
 
         var id: Self { self }
-        var subtitle: String {
-            switch self {
-            case .headplane: "Headplane · 设备 · 路由与访问控制"
-            case .router: "TP-LINK · 接入设备 · IP/MAC 绑定"
-            case .qinglong: "定时任务 · 脚本 · 订阅管理"
-            case .cloudServers: "阿里云 ECS · 监控 · 进程与终端"
-            case .containers: "Arcane · 容器状态 · 日志与更新"
-            case .devices: "设备在线状态 · 能力调用"
-            case .codeWorkshop: "Codex 会话 · 编程任务 · 原型预览"
-            case .swissArmyKnife: "实用小工具 · 随机字符串与二维码扫描"
-            case .sports: "运动趋势 · 每次记录 · GitHub 归档"
-            case .usage: "每日概览 · Top 5 · GitHub 归档"
-            case .investment: "账户 · 持仓 · 定投"
-            case .crypto: "HTX · Binance · 链上资产与私有归档"
-            case .stockTrade: "Cerno · 每日推荐 · 日周 K 线与规则监控"
+        private var module: HakoApplicationModule {
+            guard let module = HakoApplications.modules.first(where: { $0.application == self }) else {
+                preconditionFailure("Application entry is not registered")
             }
+            return module
         }
-        var symbol: String {
-            switch self {
-            case .headplane: "network"
-            case .router: "wifi.router"
-            case .qinglong: "checklist"
-            case .cloudServers: "server.rack"
-            case .containers: "shippingbox"
-            case .devices: "desktopcomputer"
-            case .codeWorkshop: "terminal"
-            case .swissArmyKnife: "wrench.and.screwdriver"
-            case .sports: "figure.run"
-            case .usage: "chart.bar.xaxis"
-            case .investment: "chart.line.uptrend.xyaxis"
-            case .crypto: "bitcoinsign.circle"
-            case .stockTrade: "chart.xyaxis.line"
-            }
-        }
-        @MainActor @ViewBuilder var destination: some View {
-            switch self {
-            case .headplane: HeadplaneView()
-            case .router: RouterView()
-            case .qinglong: QinglongView()
-            case .cloudServers: CloudServersView()
-            case .containers: ContainersView()
-            case .devices: DeviceMonitorView()
-            case .codeWorkshop: CodeWorkshopView()
-            case .swissArmyKnife: SwissArmyKnifeView()
-            case .sports: SportsView()
-            case .usage: UsageEntry()
-            case .investment: InvestmentView()
-            case .crypto: CryptoView()
-            case .stockTrade: StockTradeView()
-            }
-        }
-
-        @MainActor fileprivate func registerShortcuts(in registry: HakoShortcutRegistry) {
-            switch self {
-            case .usage: UsageShortcutContributor.registerShortcuts(in: registry)
-            case .crypto: CryptoShortcutContributor.registerShortcuts(in: registry)
-            case .investment: InvestmentShortcutContributor.registerShortcuts(in: registry)
-            default: break
-            }
-        }
-
-        @MainActor fileprivate func registerNotifications(in registry: ApplicationNotificationRegistry<WorkshopPushNotice, AnyView>) {
-            switch self {
-            case .codeWorkshop: WorkshopNotificationContributor.registerNotifications(in: registry)
-            default: break
-            }
+        var subtitle: String { module.subtitle }
+        var icon: HakoApplicationIconSource? { module.icon }
+        @MainActor var destination: AnyView {
+            guard let destination = module.destination else { preconditionFailure("Application page is not registered") }
+            return destination()
         }
     }
 
     @MainActor static let notifications: ApplicationNotificationRegistry<WorkshopPushNotice, AnyView> = {
         let registry = ApplicationNotificationRegistry<WorkshopPushNotice, AnyView>()
-        for application in Category.allCases.flatMap(\.applications) {
-            application.registerNotifications(in: registry)
-        }
+        for contribute in registration.notifications { contribute(registry) }
         return registry
     }()
 
     @MainActor static let pins: HakoPinRegistry = {
         let registry = HakoPinRegistry()
-        WorkshopPinContributor.register(in: registry)
-        ArcanePinContributor.register(in: registry)
+        for contribute in registration.pins { contribute(registry) }
         return registry
     }()
 
     @MainActor static func registerShortcuts(in registry: HakoShortcutRegistry) {
-        for application in Category.allCases.flatMap(\.applications) {
-            application.registerShortcuts(in: registry)
-        }
+        for contribute in registration.shortcuts { contribute(registry) }
     }
 
     @MainActor static func registerBackupScopes(in cloud: HakoCloudSettings) {
-        for application in Category.allCases.flatMap(\.applications) {
-            switch application {
-            case .codeWorkshop: cloud.registerBackupScopes(WorkshopBackup.scopes)
-            case .investment: cloud.registerBackupScopes(InvestmentBackup.scopes)
-            case .qinglong: cloud.registerBackupScopes(QinglongBackup.scopes)
-            default: break
-            }
-        }
+        for contribute in registration.backups { contribute(cloud) }
     }
-
 }

@@ -25,6 +25,18 @@ private final class DraftWrites: @unchecked Sendable {
     }
 
     @MainActor static func main() async throws {
+        #if canImport(Combine)
+        let composer = WorkshopComposerInput()
+        let suggestion = WorkshopInputPrediction(sourceTurnId: "latest", text: "查看修改")
+        composer.receivePrediction(suggestion, sourceTurnId: "latest", ready: true)
+        precondition(composer.text.isEmpty && composer.prediction == suggestion)
+        precondition(composer.acceptPrediction() && composer.text == "查看修改" && composer.prediction == nil)
+        composer.receivePrediction(suggestion, sourceTurnId: "latest", ready: true)
+        precondition(composer.prediction == nil && composer.text == "查看修改", "Sync must preserve the accepted draft")
+        composer.text = "我的草稿"
+        composer.receivePrediction(.init(sourceTurnId: "next", text: "另一个建议"), sourceTurnId: "next", ready: true)
+        precondition(composer.text == "我的草稿" && !composer.acceptPrediction(), "Prediction must not overwrite typed text")
+        #endif
         var textState = WorkshopComposerText()
         let composingID = textState.editorID
         textState.update("持仓标题行单独出来，不要放在 section 内部，画原型", editorID: composingID)

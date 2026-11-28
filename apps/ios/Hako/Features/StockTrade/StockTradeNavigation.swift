@@ -8,7 +8,7 @@ import UIKit
         let page: Page
     }
     enum Page {
-        case search, history, publications, operations, alerts, health
+        case search, history, publications, operations, alerts, health, monitorControl
         case stock(StockTradeRecord, StockTradeRun?)
         case alert(StockTradeRecord, String?)
         case create(StockTradeWorkflowKind)
@@ -25,6 +25,7 @@ struct StockTradeDestination: View {
     @ObservedObject var store: StockTradeStore
     let route: StockTradeNavigation.Route
     let showResults: () -> Void
+    let showMonitor: () -> Void
     var body: some View {
         switch route.page {
         case .search: StockTradeSearchView(store: store)
@@ -33,6 +34,7 @@ struct StockTradeDestination: View {
         case .operations: StockTradeOperations(store: store, showResults: showResults)
         case .alerts: StockTradeFeedView(store: store, kind: .alerts)
         case .health: StockTradeHealthView(store: store)
+        case .monitorControl: StockTradeMonitorManagement(store: store, showMonitor: showMonitor)
         case .stock(let record, let run): StockTradeStockView(store: store, record: record, run: run)
         case .alert(let record, let snapshot): StockTradeAlertView(store: store, record: record, snapshotID: snapshot)
         case .create(let kind): StockTradeWorkflowFormContent(store: store, kind: kind, showResults: showResults)

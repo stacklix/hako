@@ -11,6 +11,8 @@ struct WorkshopSubagent: Decodable, Identifiable {
     let updatedAt: Int64
     var taskState: String? = nil
     var taskVersion: String? = nil
+    var turn: WorkshopTurn? = nil
+    var summary: String? = nil
 
     var taskDescription: String {
         if !task.isEmpty { return task }
@@ -49,7 +51,6 @@ struct WorkshopSubagent: Decodable, Identifiable {
         }
     }
 }
-
 struct WorkshopSubagentList: Decodable {
     let agents: [WorkshopSubagent]
     let nextCursor: String?
@@ -93,5 +94,3 @@ struct WorkshopSubagentTaskPage: Decodable {
         }.sorted { $0.position < $1.position }
     }
 }
-
-enum WorkshopCollaborationTab: String, CaseIterable { case sidechats = "侧聊", agents = "子代理" }

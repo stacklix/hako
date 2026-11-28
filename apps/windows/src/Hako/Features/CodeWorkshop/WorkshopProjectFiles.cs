@@ -26,6 +26,7 @@ internal sealed class WorkshopProjectFiles
     }
     private readonly Dictionary<string, Upload> uploads = new();
     private readonly SemaphoreSlim gate = new(1, 1);
+    private readonly WorkshopDownloadCache images = new();
 
     internal async Task<object?> CallAsync(string method, string root, JsonElement p, CancellationToken token)
     {
@@ -45,6 +46,11 @@ internal sealed class WorkshopProjectFiles
             {
                 CodexJson.Keys(p, "applicationId", "path", "offset", "revision");
                 return Read(root, CodexJson.Required(p, "path", 2048), Integer(p, "offset"), CodexJson.Text(p, "revision"));
+            }
+            if (method == "files.image.read")
+            {
+                CodexJson.Keys(p, "applicationId", "path", "offset", "revision");
+                return await ReadImageAsync(root, CodexJson.Required(p, "path", 2048), Integer(p, "offset"), CodexJson.Text(p, "revision"), token);
             }
             await gate.WaitAsync(token);
             try { return Write(method, root, p, token); }
@@ -220,6 +226,35 @@ internal sealed class WorkshopProjectFiles
             reason = encoding == null ? "此文件不是受支持的文本文件。" : info.IsReadOnly ? "此文件被设置为只读。" : null,
             data = encoding == null ? "" : Convert.ToBase64String(bytes.AsSpan(offset, Math.Min(ChunkSize, bytes.Length - offset))),
             nextOffset = encoding != null && offset + ChunkSize < bytes.Length ? (int?)(offset + ChunkSize) : null };
+    }
+    private async Task<object> ReadImageAsync(string root, string relative, int offset, string revision, CancellationToken token)
+    {
+        // Validate on every chunk, including cached snapshots, so links cannot escape the project.
+        var path = Resolve(root, relative);
+        var snapshot = await images.ReadAsync(path, revision, async () =>
+        {
+            await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 8192, true);
+            if (stream.Length is <= 0 or > CodeWorkshop.MaximumReadImageBytes)
+                throw new WorkshopException("file_too_large", "图片为空或超过 8 MB，无法预览。");
+            var bytes = new byte[(int)stream.Length];
+            await stream.ReadExactlyAsync(bytes, token);
+            // Raster images only; never deliver HTML/SVG or arbitrary project files as images.
+            if (!ImageBytes(bytes)) throw new WorkshopException("file_not_image", "此文件不是受支持的图片。");
+            return bytes;
+        }, token);
+        if (revision.Length > 0 && revision != snapshot.Revision)
+            throw new WorkshopException("file_conflict", "图片已更新，请重新打开。");
+        if (offset > snapshot.Data.Length) throw CodexJson.Invalid();
+        var count = Math.Min(24 * 1024, snapshot.Data.Length - offset);
+        return new { id = relative, name = Path.GetFileName(path), revision = snapshot.Revision, offset,
+            total = snapshot.Data.Length, content = Convert.ToBase64String(snapshot.Data, offset, count), nextOffset = offset + count };
+    }
+    private static bool ImageBytes(byte[] bytes)
+    {
+        var data = bytes.AsSpan();
+        return data.StartsWith(new byte[] { 137, 80, 78, 71, 13, 10, 26, 10 }) ||
+            data.StartsWith(new byte[] { 255, 216, 255 }) || data.StartsWith("GIF87a"u8) || data.StartsWith("GIF89a"u8) ||
+            (data.Length >= 12 && data.StartsWith("RIFF"u8) && data[8..].StartsWith("WEBP"u8));
     }
     private static WorkshopException Conflict() => new("file_conflict", "文件已被其他操作修改。草稿已保留，请重新读取电脑文件核对后再编辑。");
 

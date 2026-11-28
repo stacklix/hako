@@ -1,9 +1,23 @@
 import Foundation
 
-struct HakoBackupScope {
+struct HakoBackupScope: Sendable {
     let root: String
     var includedFileSuffixes: [String]? = nil
     var requiresHistory = false
+}
+
+// Serial disk work also preserves the order of rapid backup-setting changes.
+final class HakoBackupPreparation: Sendable {
+    private let queue = DispatchQueue(label: "me.stackli.hako.backup-preparation", qos: .utility)
+
+    func run(_ operation: @escaping @Sendable () throws -> Void) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            queue.async {
+                do { try operation(); continuation.resume() }
+                catch { continuation.resume(throwing: error) }
+            }
+        }
+    }
 }
 
 enum HakoBackupPolicy {

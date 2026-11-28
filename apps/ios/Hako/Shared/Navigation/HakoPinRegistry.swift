@@ -29,7 +29,8 @@ import Combine
     }
 
     func icon(for page: HakoPinnedPage) -> AnyView {
-        icons[page.applicationID]?[page.route]?(page) ?? AnyView(Image(systemName: page.symbol))
+        icons[page.applicationID]?[page.route]?(page) ?? AnyView(
+            HakoApplicationIcon(application: HakoApplications.Application(rawValue: page.applicationID)))
     }
 
     func contains(_ page: HakoPinnedPage) -> Bool { routes[page.applicationID]?[page.route] != nil }

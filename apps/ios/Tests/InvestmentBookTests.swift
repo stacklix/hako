@@ -28,6 +28,7 @@ struct InvestmentBookTests {
         try genericBalancesValidateAndReplayHistory()
         try spotBalanceAdjustmentsUseTokenQuantity()
         try plansUseCashInExecutionOrder()
+        try planManagementScopesToSelectedAccount()
         try planSchedulesRespectCalendarDays()
         try planPeriodsCatchUpOnceAndRoundTrip()
         try historicalPlansUseClosedPricesAndKeepCashFlows()
@@ -179,7 +180,9 @@ struct InvestmentBookTests {
         for kind in [InvestmentKind.stock, .etf, .fund, .crypto, .future] {
             for text in ["12.3456", "1.005", "0.0123", "0.0001", "71504.1234"] {
                 let price = Decimal(string: text)!
-                try InvestmentPrecision.validateInput(price, field: "单价", unitPrice: true)
+                try InvestmentPrecision.validateInput(price, field: "单价", rule: .price(for: kind))
+                let parsed = try InvestmentPrecision.parseInput(text, field: "单价", rule: .price(for: kind))
+                precondition(parsed == price)
                 let asset = InvestmentAsset(name: "精度测试", code: "TEST", market: "", kind: kind, currency: .usd)
                 let event = InvestmentEvent(day: date(1), kind: .opening, assetID: asset.id, quantity: 1, price: price)
                 let account = InvestmentAccount(name: "精度测试", currency: .usd, events: [event], type: .securities)
@@ -194,10 +197,17 @@ struct InvestmentBookTests {
                 precondition(restored.accounts[0].events[0].price == price)
             }
         }
-        do { try InvestmentPrecision.validateInput(Decimal(string: "12.34567")!, field: "单价", unitPrice: true); preconditionFailure("Reject fifth decimal") }
+        do { try InvestmentPrecision.validateInput(Decimal(string: "12.34567")!, field: "单价", rule: .unitPrice); preconditionFailure("Reject fifth decimal") }
         catch InvestmentError.invalid {}
         do { try InvestmentPrecision.validateInput(Decimal(string: "12.3456")!, field: "金额"); preconditionFailure("Amounts still use amount precision") }
         catch InvestmentError.invalid {}
+        let leadingFraction = try InvestmentPrecision.parseInput(" .1234 ", field: "单价", rule: .unitPrice)
+        precondition(leadingFraction == Decimal(string: "0.1234"))
+        for rule in [InvestmentPrecision.InputRule.unitPrice, .amount, .price(for: .insurance), .price(for: .wealth)] {
+            let invalid = rule == .unitPrice ? "12.34567" : "12.3456"
+            do { _ = try InvestmentPrecision.parseInput(invalid, field: "输入", rule: rule); preconditionFailure("Shared parsing must reject excess precision") }
+            catch InvestmentError.invalid {}
+        }
     }
 
     static func fractionalCryptoTradesSurviveStorage() throws {
@@ -778,6 +788,26 @@ struct InvestmentBookTests {
         precondition(book.plans.allSatisfy { $0.nextDay > third })
         let report = book.planReport(since: priorRuns)
         precondition(report.executed == 2 && report.skipped == 0 && report.waiting == 0)
+    }
+
+    static func planManagementScopesToSelectedAccount() throws {
+        let first = InvestmentAccount(name: "证券账户", currency: .cny, type: .securities)
+        let second = InvestmentAccount(name: "养老金", currency: .cny, type: .fundWealth)
+        let empty = InvestmentAccount(name: "无定投账户", currency: .cny, type: .securities)
+        var book = InvestmentBook(accounts: [first, second, empty])
+        let schedule = try InvestmentPlanSchedule(frequency: .monthly, day: 1)
+        let deposit = InvestmentPlan(accountID: first.id, amount: 100, schedule: schedule, nextDay: InvestmentBook.day())
+        let buy = InvestmentPlan(accountID: second.id, assetID: UUID(), amount: 200, schedule: schedule,
+                                 nextDay: InvestmentBook.day(), enabled: false)
+        book.plans = [deposit, buy]
+        precondition(book.plans(for: first.id) == [deposit])
+        precondition(book.plans(for: second.id) == [buy], "Paused plans remain manageable only in their own account")
+        precondition(book.plans(for: empty.id).isEmpty, "Another account's plans must not suppress the current account's empty state")
+        book.plans[0].accountID = second.id
+        let restored = try JSONDecoder().decode(InvestmentBook.self, from: JSONEncoder().encode(book))
+        precondition(restored.plans(for: first.id).isEmpty)
+        precondition(restored.plans(for: second.id).map(\.id) == [deposit.id, buy.id],
+                     "Moving a plan must remove it from its former account after saving")
     }
 
     static func planSchedulesRespectCalendarDays() throws {

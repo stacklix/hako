@@ -36,10 +36,11 @@ internal sealed class WorkshopDispatcher : IAsyncDisposable, IWorkshopDispatcher
     private readonly CodeWorkshop workshop;
     private readonly string directory;
     internal CommandTasks? Commands { get; }
-    internal WorkshopDispatcher(string dataDirectory, bool commandsOnly = false)
+    internal WorkshopDispatcher(string dataDirectory, bool commandsOnly = false, bool prewarmWorkers = false)
     {
         directory = dataDirectory;
-        workshop = new CodeWorkshop(System.IO.Path.Combine(dataDirectory, "code-workshop"));
+        workshop = new CodeWorkshop(System.IO.Path.Combine(dataDirectory, "code-workshop"),
+            workerWarmCount: prewarmWorkers && !commandsOnly ? WorkshopWorkers.DefaultWarmCount : 0);
         if (commandsOnly) Commands = new CommandTasks(dataDirectory, workshop);
     }
     public async ValueTask DisposeAsync()
@@ -63,7 +64,7 @@ internal sealed class WorkshopDispatcher : IAsyncDisposable, IWorkshopDispatcher
         if (Commands is not null) return await Commands.CallAsync(method, parameters, token);
         if (method is "commands.list" or "commands.start" or "commands.read" or "commands.stop")
             return await CommandHost.ForwardAsync(directory, method, parameters, token);
-        if (method is "files.list" or "files.modified" or "files.read" or "files.write.begin" or "files.write.chunk" or "files.write.commit")
+        if (method is "files.list" or "files.modified" or "files.read" or "files.image.read" or "files.write.begin" or "files.write.chunk" or "files.write.commit")
             return await workshop.FilesAsync(method, parameters, token);
         if (method == "commands.open")
         {

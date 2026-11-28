@@ -53,7 +53,7 @@ struct NotificationManagementView: View {
                 }
             }
         }
-        .navigationTitle("Webhook 管理")
+        .navigationTitle("通知Webhooks")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {

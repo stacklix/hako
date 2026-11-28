@@ -2,10 +2,7 @@ import SwiftUI
 
 struct WorkshopMessageDeliveryView: View {
     let state: WorkshopDeliveryState
-    let canRetry: Bool
-    let retry: () -> Void
     let cancel: () -> Void
-    let check: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -31,19 +28,8 @@ struct WorkshopMessageDeliveryView: View {
                     ProgressView().controlSize(.mini)
                     Text("正在发送…").foregroundStyle(HakoStyle.muted)
                 }
-            case .failed(let message):
-                Label(message, systemImage: "exclamationmark.circle")
-                    .foregroundStyle(.red).textSelection(.enabled)
-                Button("重试", action: retry).disabled(!canRetry)
-                    .buttonStyle(HakoActionButtonStyle())
-                    .accessibilityLabel("重试这条原消息")
-            case .unconfirmed(let message):
-                Label(message, systemImage: "questionmark.circle")
-                    .foregroundStyle(HakoStyle.muted).textSelection(.enabled)
-                HStack(spacing: 12) {
-                    Button("检查结果", action: check).buttonStyle(HakoActionButtonStyle(primary: false))
-                    Button("重试", action: retry).buttonStyle(HakoActionButtonStyle()).disabled(!canRetry)
-                }
+            case .failed, .unconfirmed:
+                EmptyView()
             }
         }.font(.caption)
     }
