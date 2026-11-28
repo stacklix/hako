@@ -25,6 +25,10 @@ actor WorkshopProjectImageDisk {
 
     func read(_ file: URL) -> (Data, String)? {
         guard permits(file) else { return nil }
+        // Atomic replacement can leave the caller's URL caching the old inode's
+        // size/type. Validate against current metadata, not that cached snapshot.
+        var file = file
+        file.removeAllCachedResourceValues()
         do {
             let values = try file.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey, .isSymbolicLinkKey])
             guard values.isRegularFile == true, values.isSymbolicLink != true,

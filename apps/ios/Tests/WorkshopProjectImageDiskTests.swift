@@ -20,10 +20,20 @@ private func fixtureHash(_ bytes: Data) -> String {
         let restarted = WorkshopProjectImageDisk(maximumImageBytes: 128, maximumDiskBytes: 1024, hash: { fixtureHash($0) })
         let restored = await restarted.read(file)
         precondition(restored?.0 == bytes && restored?.1 == revision, "App restart must retain bytes and the exact revision")
-        let changed = Data("new image".utf8)
-        try await disk.write(changed, revision: fixtureHash(changed), to: file)
-        let latest = await restarted.read(file)
-        precondition(latest?.0 == changed && latest?.1 == fixtureHash(changed), "Atomic replacement must retain one complete revision")
+        // A URL may retain the previous inode's metadata after atomic replacement.
+        // Seed its old size explicitly to exercise Darwin's cached resource values.
+        var cachedFile = file
+        var previousSize = bytes.count + 65
+        for changed in [Data("new image".utf8), Data(repeating: 42, count: 128), Data([7])] {
+            cachedFile.setTemporaryResourceValue(previousSize, forKey: .fileSizeKey)
+            let cachedSize = try cachedFile.resourceValues(forKeys: [.fileSizeKey]).fileSize
+            precondition(cachedSize == previousSize)
+            try await disk.write(changed, revision: fixtureHash(changed), to: file)
+            let latest = await restarted.read(cachedFile)
+            precondition(latest?.0 == changed && latest?.1 == fixtureHash(changed), "Atomic replacement must retain one complete revision despite cached URL metadata")
+            precondition(FileManager.default.fileExists(atPath: file.path), "A valid replacement must not be removed as corrupt")
+            previousSize = changed.count + 65
+        }
 
         var payload = try Data(contentsOf: file)
         payload[payload.count - 1] ^= 1
