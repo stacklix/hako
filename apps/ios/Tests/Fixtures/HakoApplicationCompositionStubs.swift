@@ -45,7 +45,7 @@ enum MarketAPIRequestContext {
 }
 enum HTTPTransport {
     static func data(for request: URLRequest, source: HakoLogSource, secrets: [String],
-                     logBody: Bool) async throws -> (Data, URLResponse) {
+                     logBody: Bool, logErrorBody: Bool = false) async throws -> (Data, URLResponse) {
         preconditionFailure("Composition tests must not call the network")
     }
 }
